@@ -1,0 +1,8 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "semi": false,
+  "sortImports": true,
+  "sortTailwindcss": { "stylesheet": "./src/index.css", "functions": ["cn", "cva"] },
+  // Left as the shadcn CLI writes them, so re-adding a component diffs only upstream changes.
+  "ignorePatterns": ["src/components/ui"]
+}

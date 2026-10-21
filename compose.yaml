@@ -1,0 +1,11 @@
+# Runs the AIO Monitor server with the dashboard on http://localhost:3000:
+# `AIOM_TOKEN=change-me docker compose up -d`.
+services:
+  aiom-server:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      AIOM_TOKEN: ${AIOM_TOKEN:?Set AIOM_TOKEN in .env or the environment}
+      AIOM_IPINFO_TOKEN: ${AIOM_IPINFO_TOKEN:-}
+    restart: unless-stopped

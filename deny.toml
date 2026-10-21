@@ -1,0 +1,40 @@
+# cargo-deny configuration, see https://embarkstudios.github.io/cargo-deny/
+
+[graph]
+all-features = true
+
+[advisories]
+# Any other RustSec advisory (vulnerable, unmaintained, unsound or yanked crates) fails.
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained compile-time macro pulled in by netstat2, with no replacement yet" },
+    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26 only re-exports webpki-roots 1.x, which bans below pin to a fixed version" },
+]
+
+[licenses]
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# The workspace crates are not published.
+ignore = true
+
+[bans]
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+    { crate = "webpki-roots@^1, <1.0.10", reason = "trusts distrusted emSign intermediates (RUSTSEC-2026-0381)" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

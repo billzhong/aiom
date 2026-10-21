@@ -1,0 +1,34 @@
+[package]
+name = "aiom-client"
+description = "AIO Monitor client: reports metrics of the host it runs on to the server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+aiom-protocol.workspace = true
+clap.workspace = true
+env_logger.workspace = true
+futures-util.workspace = true
+log.workspace = true
+netstat2.workspace = true
+rustls.workspace = true
+sysinfo.workspace = true
+tokio = { workspace = true, features = ["macros", "rt", "signal", "time"] }
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"] }
+url.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["net", "sync"] }
+
+[lints]
+workspace = true

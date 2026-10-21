@@ -1,0 +1,72 @@
+[
+  {
+    "timestamp": 1760000000,
+    "name": "tokyo-1",
+    "host": {
+      "agent": "0.1.0",
+      "os": "Ubuntu",
+      "os_version": "24.04",
+      "cpu": "AMD EPYC 7B13",
+      "cpu_count": 2,
+      "cpu_arch": "x86_64",
+      "total_memory": 4294967296,
+      "total_swap": 1073741824,
+      "total_disk": 107374182400,
+      "v12n": "kvm"
+    },
+    "stats": {
+      "cpu_usage": 12.5,
+      "used_memory": 1073741824,
+      "used_swap": 0,
+      "used_disk": 53687091200,
+      "network_in": 10737418240,
+      "network_out": 5368709120,
+      "network_in_speed": 125000,
+      "network_out_speed": 250000,
+      "uptime": 90061,
+      "boot_time": 1759909939,
+      "load1": 0.5,
+      "load5": 0.25,
+      "load15": 0.125,
+      "tcp_count": 12,
+      "udp_count": 3,
+      "process_count": 120
+    },
+    "geoip": "JP"
+  },
+  {
+    "timestamp": 1759990000,
+    "name": "unknown-location",
+    "host": {
+      "agent": "",
+      "os": "",
+      "os_version": "",
+      "cpu": "",
+      "cpu_count": 0,
+      "cpu_arch": "",
+      "total_memory": 0,
+      "total_swap": 0,
+      "total_disk": 0,
+      "v12n": ""
+    },
+    "stats": {
+      "cpu_usage": 0.0,
+      "used_memory": 0,
+      "used_swap": 0,
+      "used_disk": 0,
+      "network_in": 0,
+      "network_out": 0,
+      "network_in_speed": 0,
+      "network_out_speed": 0,
+      "uptime": 0,
+      "boot_time": 0,
+      "load1": 0.0,
+      "load5": 0.0,
+      "load15": 0.0,
+      "tcp_count": 0,
+      "udp_count": 0,
+      "process_count": 0
+    },
+    "geoip": ""
+  }
+]

@@ -1,0 +1,21 @@
+[package]
+name = "aiom-e2e"
+description = "End-to-end tests running the AIO Monitor client against the server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dev-dependencies]
+aiom-server.workspace = true
+aiom-client.workspace = true
+aiom-protocol.workspace = true
+clap.workspace = true
+futures-util.workspace = true
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite.workspace = true
+url.workspace = true
+
+[lints]
+workspace = true
