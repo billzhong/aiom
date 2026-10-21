@@ -1,0 +1,45 @@
+{
+  "theme": {
+    "dark": "暗色",
+    "light": "亮色",
+    "system": "系统",
+    "toggle": "切换主题"
+  },
+  "language": {
+    "en": "英语",
+    "zh": "中文",
+    "toggle": "切换语言"
+  },
+  "subtitle": "节点监控",
+  "total": "总数",
+  "online": "在线",
+  "offline": "离线",
+  "network": "网络",
+  "all": "全部",
+  "loadavg": "负载",
+  "os": "系统",
+  "cpu": "处理器",
+  "ram": "内存",
+  "disk": "磁盘",
+  "cores_one": "核心",
+  "cores_other": "核心",
+  "location": "地区",
+  "unknown": "未知",
+  "swap": "虚拟内存",
+  "transfer": "流量",
+  "boot-time": "启动时间",
+  "last-update": "最后更新",
+  "processes": "进程数",
+  "connections": "连接数",
+  "hardware": "硬件",
+  "download": "下载",
+  "upload": "上传",
+  "filter": "筛选",
+  "websocket": {
+    "error-reconnect": "WebSocket 已断开，正在尝试重新连接...",
+    "error-max-attempts": "WebSocket 已达到最大尝试次数，请刷新页面...",
+    "error-data": "WebSocket 数据错误，请刷新页面..."
+  },
+  "waiting": "正在等待节点数据...",
+  "no-match": "没有符合筛选条件的节点。"
+}

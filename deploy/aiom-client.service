@@ -1,0 +1,31 @@
+# AIO Monitor client.
+#
+#   install -m 755 aiom-client /usr/local/bin/
+#   install -D -m 600 /dev/stdin /etc/aiom/client.env <<'END'
+#   AIOM_NAME=web-1
+#   AIOM_SERVER=wss://monitor.example.com/agent
+#   AIOM_TOKEN=change-me
+#   # Optional: report interval in ms and reconnect delay in s.
+#   # AIOM_INTERVAL=1000
+#   # AIOM_RETRY=5
+#   END
+#   install -m 644 aiom-client.service /etc/systemd/system/
+#   systemctl enable --now aiom-client
+
+[Unit]
+Description=AIO Monitor client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Reading system metrics needs no privileges.
+DynamicUser=yes
+EnvironmentFile=/etc/aiom/client.env
+ExecStart=/usr/local/bin/aiom-client
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

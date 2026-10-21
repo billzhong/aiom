@@ -1,0 +1,45 @@
+{
+  "theme": {
+    "dark": "Dark",
+    "light": "Light",
+    "system": "System",
+    "toggle": "Toggle theme"
+  },
+  "language": {
+    "en": "English",
+    "zh": "Chinese",
+    "toggle": "Change language"
+  },
+  "subtitle": "Node Monitor",
+  "total": "Total",
+  "online": "Online",
+  "offline": "Offline",
+  "network": "Network",
+  "all": "All",
+  "loadavg": "Load",
+  "os": "OS",
+  "cpu": "CPU",
+  "ram": "RAM",
+  "disk": "Disk",
+  "cores_one": "Core",
+  "cores_other": "Cores",
+  "location": "Location",
+  "unknown": "Unknown",
+  "swap": "Swap",
+  "transfer": "Transfer",
+  "boot-time": "Boot Time",
+  "last-update": "Last Update",
+  "processes": "Processes",
+  "connections": "Connections",
+  "hardware": "Hardware",
+  "download": "Download",
+  "upload": "Upload",
+  "filter": "Filter",
+  "websocket": {
+    "error-reconnect": "WebSocket is disconnected, trying to reconnect...",
+    "error-max-attempts": "WebSocket has reached max attempts, please refresh the page...",
+    "error-data": "WebSocket data error, please refresh the page..."
+  },
+  "waiting": "Waiting for nodes...",
+  "no-match": "No nodes match the filters."
+}

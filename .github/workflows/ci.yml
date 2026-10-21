@@ -1,0 +1,189 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    # A manual run checks everything.
+    outputs:
+      rust: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.rust }}
+      web: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.web }}
+      docker: ${{ github.event_name == 'workflow_dispatch' || steps.filter.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          filters: |
+            workflow: &workflow
+              - .github/workflows/ci.yml
+            rust:
+              - *workflow
+              - "crates/**"
+              - Cargo.toml
+              - Cargo.lock
+              - clippy.toml
+              - deny.toml
+              - ".cargo/**"
+            web:
+              - *workflow
+              - "web/**"
+              # Shared with the protocol test of the web UI.
+              - "crates/protocol/fixtures/**"
+            docker:
+              - *workflow
+              - "crates/**"
+              - Cargo.toml
+              - Cargo.lock
+              - "web/**"
+              - Dockerfile
+              - .dockerignore
+
+  rust-lint:
+    name: Rust lint
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  rust-test:
+    name: Rust test (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            packages: --workspace
+          # The server only targets Linux; the client runs everywhere.
+          - os: macos-latest
+            packages: --package aiom-client --package aiom-protocol
+          - os: windows-latest
+            packages: --package aiom-client --package aiom-protocol
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test ${{ matrix.packages }} --all-targets --locked
+
+  rust-msrv:
+    name: Rust MSRV
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read rust-version
+        id: msrv
+        run: echo "version=$(sed -n 's/^rust-version = "\(.*\)"/\1/p' Cargo.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace --all-targets --locked
+
+  rust-deny:
+    name: Rust dependencies
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: EmbarkStudios/cargo-deny-action@v2
+
+  web:
+    name: Web
+    needs: changes
+    if: needs.changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: web/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: web/.nvmrc
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --prod --audit-level high
+      - run: pnpm run format:check
+      - run: pnpm run lint
+      - run: pnpm run typecheck
+      - run: pnpm test
+      - run: pnpm run build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 7
+
+  docker:
+    name: Docker
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: aiom-server:ci
+          cache-from: type=gha,scope=linux-amd64
+      - name: Smoke test
+        run: |
+          docker run --detach --name aiom-server --publish 3000:3000 --env AIOM_TOKEN=ci aiom-server:ci
+          trap 'docker logs aiom-server; docker rm --force aiom-server' EXIT
+          for _ in $(seq 30); do curl --fail --silent http://127.0.0.1:3000/healthz && break; sleep 1; done
+          test "$(curl --silent http://127.0.0.1:3000/healthz)" = ok
+          test "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:3000/agent)" = 401
+          curl --fail --silent http://127.0.0.1:3000/ | grep --quiet '<div id="root">'
+
+  # The single check to require in branch protection: it passes when every job above
+  # passed or was skipped because nothing relevant changed.
+  ci:
+    name: CI
+    needs: [changes, rust-lint, rust-test, rust-msrv, rust-deny, web, docker]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if a job failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
+      - run: echo "All jobs passed or were skipped."

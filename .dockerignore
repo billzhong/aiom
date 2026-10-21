@@ -1,0 +1,20 @@
+# The Rust workspace and the dashboard sources are all the image needs.
+**/target
+web/node_modules
+web/dist
+web/coverage
+deploy
+.git
+.github
+.cargo
+.idea
+.vscode
+.claude
+**/.DS_Store
+**/*.md
+# Local configuration, such as the dashboard URL in web/.env, stays out of the image.
+**/.env
+**/.env.*
+**/*.local
+Dockerfile
+.dockerignore
