@@ -32,8 +32,8 @@ run, no root required.
   [ipinfo.io](https://ipinfo.io).
 - **Modern dashboard**: built with React, Tailwind CSS and shadcn/ui. Per-node history charts,
   filtering by country and name, light and dark themes, English and Chinese.
-- **Deploy anywhere**: one multi-arch Docker image that serves the dashboard too, prebuilt
-  binaries, or the dashboard on any static host.
+- **Deploy anywhere**: one multi-arch Docker image or a single prebuilt binary that serves the
+  dashboard too, or the dashboard on any static host.
 - **Secure by default**: agents authenticate with a bearer token. The dashboard channel is
   read-only.
 
@@ -107,7 +107,7 @@ with a `.sha256` checksum:
 | `aiom-client-x86_64-pc-windows-msvc.zip`        | Windows x86_64                 |
 | `aiom-client-aarch64-apple-darwin.tar.gz`       | macOS (Apple silicon)          |
 | `aiom-server-<target>.tar.gz`                   | The same Linux targets         |
-| `aiom-web.tar.gz`                               | Built dashboard (static files) |
+| `aiom-web.tar.gz`                               | Dashboard, to host elsewhere   |
 
 For example, to install the client on a Linux x86_64 host:
 
@@ -116,7 +116,8 @@ curl -fsSL https://github.com/billzhong/aiom/releases/latest/download/aiom-clien
 sudo install -m 755 aiom-client-x86_64-unknown-linux-musl/aiom-client /usr/local/bin/
 ```
 
-Linux archives include a systemd unit as well, see [Running with systemd](#running-with-systemd).
+The server binaries have the dashboard built in. Linux archives include a systemd unit as well,
+see [Running with systemd](#running-with-systemd).
 
 ### From source
 
@@ -124,9 +125,12 @@ Requires Rust 1.95 or newer, and for the dashboard Node.js 22.12 or newer with p
 
 ```sh
 git clone https://github.com/billzhong/aiom.git && cd aiom
-cargo build --release              # target/release/aiom-server and aiom-client
-cd web && pnpm install && pnpm build   # web/dist
+(cd web && pnpm install && pnpm build)                   # web/dist
+cargo build --release --features aiom-server/embed-web   # target/release/aiom-server and aiom-client
 ```
+
+Without `--features aiom-server/embed-web`, the server needs no `web/dist` to build, and serves
+the dashboard only from `AIOM_WEB_DIR`.
 
 ## Configuration
 
@@ -142,10 +146,11 @@ The server is configured through environment variables, a `.env` file in the wor
 | `AIOM_DASHBOARD_PATH` | `--dashboard-path` | `/ws`          | Dashboard WebSocket route (public, read-only)                |
 | `AIOM_AGENT_PATH`     | `--agent-path`     | `/agent`       | Client WebSocket route (requires `Authorization: Bearer`)    |
 | `AIOM_IPINFO_TOKEN`   | `--ipinfo-token`   | _(unset)_      | ipinfo.io token, for geolocation beyond the anonymous limit  |
-| `AIOM_WEB_DIR`        | `--web-dir`        | _(unset)_      | Built dashboard to serve on all other routes                 |
+| `AIOM_WEB_DIR`        | `--web-dir`        | _(unset)_      | Built dashboard to serve instead of the one in the binary    |
 | `RUST_LOG`            |                    | `info`         | Log filter, e.g. `debug` or `aiom_server=debug,info`         |
 
-`GET /healthz` answers `ok` while the server is running.
+The dashboard is served on all other routes, from `AIOM_WEB_DIR` if set, otherwise from the
+binary. `GET /healthz` answers `ok` while the server is running.
 
 Nodes are kept in memory only: after a restart, the list fills up again as clients reconnect.
 Each node name can be used by one client at a time. While a node is connected, the server
@@ -233,8 +238,8 @@ sudo systemctl enable --now aiom-client
 ```
 
 The server works the same way with `/etc/aiom/server.env`, see the comments in
-[`deploy/aiom-server.service`](deploy/aiom-server.service). To have it serve the dashboard,
-extract `aiom-web.tar.gz` to a directory and point `AIOM_WEB_DIR` at it.
+[`deploy/aiom-server.service`](deploy/aiom-server.service). It serves the dashboard built into
+it; to serve another build, extract it to a directory and point `AIOM_WEB_DIR` at it.
 
 ## Protocol
 

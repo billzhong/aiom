@@ -16,6 +16,7 @@ clap.workspace = true
 dotenvy.workspace = true
 natord.workspace = true
 reqwest = { workspace = true, features = ["query"] }
+rust-embed = { workspace = true, optional = true }
 rustls.workspace = true
 subtle.workspace = true
 tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
@@ -26,9 +27,17 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 futures-util.workspace = true
 axum = { workspace = true, features = ["query"] }
+# The embedded dashboard is tested against a fixture, without the `embed-web` feature.
+rust-embed.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio-tungstenite.workspace = true
+tower = { workspace = true, features = ["util"] }
+
+[features]
+# Builds the dashboard in `web/dist` into the binary, to serve without `--web-dir`. Run
+# `pnpm run build` in `web` first.
+embed-web = ["dep:rust-embed"]
 
 [lints]
 workspace = true

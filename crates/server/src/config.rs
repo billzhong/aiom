@@ -28,7 +28,8 @@ pub struct Config {
     #[arg(long, env = "AIOM_IPINFO_TOKEN", hide_env_values = true)]
     pub ipinfo_token: Option<String>,
 
-    /// Directory of the built dashboard (`web/dist`) to serve on all other routes.
+    /// Directory of the built dashboard (`web/dist`) to serve on all other routes, instead of
+    /// the one built into the binary, if any.
     #[arg(long, env = "AIOM_WEB_DIR")]
     pub web_dir: Option<String>,
 }

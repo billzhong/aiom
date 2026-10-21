@@ -5,8 +5,9 @@
 #   install -m 644 aiom-server.service /etc/systemd/system/
 #   systemctl enable --now aiom-server
 #
-# To serve the dashboard as well, extract aiom-web.tar.gz to /usr/local/share/aiom/web and set
-# AIOM_WEB_DIR=/usr/local/share/aiom/web in server.env.
+# The release binary serves the dashboard built into it. To serve another build instead,
+# extract it to /usr/local/share/aiom/web and set AIOM_WEB_DIR=/usr/local/share/aiom/web in
+# server.env.
 
 [Unit]
 Description=AIO Monitor server

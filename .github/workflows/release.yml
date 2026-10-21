@@ -21,6 +21,8 @@ env:
 jobs:
   binaries:
     name: ${{ matrix.package }} ${{ matrix.target }}
+    # The server is built with the dashboard of the web job.
+    needs: web
     strategy:
       fail-fast: false
       matrix:
@@ -37,12 +39,18 @@ jobs:
     env:
       # The client runs on every monitored host, so it is built for size.
       PROFILE: ${{ matrix.package == 'aiom-client' && 'release-small' || 'release' }}
+      FEATURES: ${{ matrix.package == 'aiom-server' && '--features embed-web' || '' }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        if: matrix.package == 'aiom-server'
+        with:
+          name: web-dist
+          path: web/dist
       - uses: houseabsolute/actions-rust-cross@v1
         with:
           target: ${{ matrix.target }}
-          args: --locked --package ${{ matrix.package }} --profile ${{ env.PROFILE }}
+          args: --locked --package ${{ matrix.package }} --profile ${{ env.PROFILE }} ${{ env.FEATURES }}
       - name: Package
         id: package
         shell: bash
@@ -94,11 +102,17 @@ jobs:
       # Without VITE_WS_URL, the dashboard connects to the server serving it.
       - run: pnpm install --frozen-lockfile && pnpm run build
         working-directory: web
+      # For the server to build in.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
       - name: Package
         run: |
           mkdir dist
-          cp LICENSE web/dist/
-          tar czf dist/aiom-web.tar.gz -C web/dist .
+          tar czf dist/aiom-web.tar.gz LICENSE -C web/dist .
           (cd dist && sha256sum aiom-web.tar.gz > aiom-web.tar.gz.sha256)
       - uses: actions/upload-artifact@v7
         with:
@@ -125,6 +139,8 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           path: dist
+          # The archives, not the web-dist the server is built with.
+          pattern: aiom-*
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:

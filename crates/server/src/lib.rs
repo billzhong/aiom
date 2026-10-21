@@ -13,14 +13,13 @@ mod snapshot;
 mod web;
 mod ws;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use axum::Router;
 use axum::http::StatusCode;
 use axum::middleware;
 use axum::routing::get;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -58,19 +57,14 @@ pub struct App {
     token: BearerToken,
     dashboard_path: String,
     agent_path: String,
-    web_dir: Option<PathBuf>,
+    web: Option<web::Source>,
 }
 
 impl App {
     /// Validates `config`.
     pub fn new(config: &Config, geoip: GeoIp) -> anyhow::Result<Self> {
         config.validate().map_err(anyhow::Error::msg)?;
-        let web_dir = config.web_dir().map(PathBuf::from);
-        if let Some(dir) = &web_dir
-            && !dir.join("index.html").is_file()
-        {
-            bail!("web directory {dir:?} has no index.html");
-        }
+        let web = web::Source::new(config.web_dir())?;
         Ok(Self {
             state: AppState {
                 nodes: Arc::default(),
@@ -82,7 +76,7 @@ impl App {
             token: BearerToken::new(&config.token),
             dashboard_path: config.dashboard_path.clone(),
             agent_path: config.agent_path.clone(),
-            web_dir,
+            web,
         })
     }
 
@@ -113,8 +107,8 @@ impl App {
             .route(&self.dashboard_path, get(ws::dashboard::upgrade))
             .route(&self.agent_path, agent)
             .route(HEALTH_PATH, get(|| async { "ok" }));
-        let router = match &self.web_dir {
-            Some(dir) => router.fallback_service(web::router(dir)),
+        let router = match &self.web {
+            Some(source) => router.fallback_service(web::router(source)),
             None => router.fallback(|| async { StatusCode::NOT_FOUND }),
         };
         router
@@ -153,7 +147,7 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
         address = %listener.local_addr()?,
         agent_path = %config.agent_path,
         dashboard_path = %config.dashboard_path,
-        web_dir = config.web_dir(),
+        web = app.web.as_ref().map(tracing::field::display),
         "listening"
     );
     app.serve(listener, shutdown_signal()).await?;
