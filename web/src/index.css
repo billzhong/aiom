@@ -3,6 +3,16 @@
 
 @import "font-logos/assets/font-logos.css";
 
+/* font-logos lists its woff ahead of its woff2, so browsers would fetch the woff, four times the
+   size. Defined later, this face takes over and the other is never downloaded. */
+@font-face {
+  font-family: "font-logos";
+  font-style: normal;
+  font-weight: normal;
+  font-display: block;
+  src: url("font-logos/assets/font-logos.woff2?v=1.2.0") format("woff2");
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
@@ -25,6 +35,8 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -44,6 +56,8 @@
 }
 
 :root {
+  /* Native controls, such as scrollbars and the search box's clear button, follow the theme. */
+  color-scheme: light;
   --radius: 0.625rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.13 0.028 261.692);
@@ -60,6 +74,9 @@
   --accent: oklch(0.967 0.003 264.542);
   --accent-foreground: oklch(0.21 0.034 264.665);
   --destructive: oklch(0.577 0.245 27.325);
+  /* Status colors, unlike the chart colors the same hue in both themes. */
+  --success: oklch(0.596 0.145 163.225);
+  --warning: oklch(0.769 0.188 70.08);
   --border: oklch(0.928 0.006 264.531);
   --input: oklch(0.928 0.006 264.531);
   --ring: oklch(0.707 0.022 261.325);
@@ -79,6 +96,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.13 0.028 261.692);
   --foreground: oklch(0.985 0.002 247.839);
   --card: oklch(0.21 0.034 264.665);
@@ -94,6 +112,8 @@
   --accent: oklch(0.278 0.033 256.848);
   --accent-foreground: oklch(0.985 0.002 247.839);
   --destructive: oklch(0.704 0.191 22.216);
+  --success: oklch(0.696 0.17 162.48);
+  --warning: oklch(0.828 0.189 84.429);
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.551 0.027 264.364);

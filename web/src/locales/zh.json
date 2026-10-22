@@ -10,7 +10,6 @@
     "zh": "中文",
     "toggle": "切换语言"
   },
-  "subtitle": "节点监控",
   "total": "总数",
   "online": "在线",
   "offline": "离线",
@@ -32,14 +31,25 @@
   "processes": "进程数",
   "connections": "连接数",
   "hardware": "硬件",
+  "totals": {
+    "cores": "处理器核心数",
+    "cpu-usage": "处理器使用率",
+    "memory": "内存总量",
+    "memory-usage": "内存使用率",
+    "upload-speed": "上传速度",
+    "uploaded": "累计上传",
+    "download-speed": "下载速度",
+    "downloaded": "累计下载"
+  },
+  "not-available": "不适用",
   "download": "下载",
   "upload": "上传",
   "filter": "筛选",
   "websocket": {
     "error-reconnect": "WebSocket 已断开，正在尝试重新连接...",
-    "error-max-attempts": "WebSocket 已达到最大尝试次数，请刷新页面...",
     "error-data": "WebSocket 数据错误，请刷新页面..."
   },
+  "refresh": "刷新",
   "waiting": "正在等待节点数据...",
   "no-match": "没有符合筛选条件的节点。"
 }

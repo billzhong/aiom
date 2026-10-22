@@ -9,6 +9,7 @@ import {
   appendChartPoints,
   filterByStatus,
   filterNodes,
+  locationsOf,
   summarize,
 } from "@/lib/nodes"
 import type { Charts, NodeData, Status } from "@/lib/types"
@@ -50,12 +51,16 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
         }
       },
       onError: (error) => {
-        const key = {
-          disconnected: "websocket.error-reconnect",
-          "gave-up": "websocket.error-max-attempts",
-          "bad-data": "websocket.error-data",
-        }[error]
-        toast.error(i18n.t(key), { id: TOAST_ID })
+        const badData = error === "bad-data"
+        toast.error(i18n.t(badData ? "websocket.error-data" : "websocket.error-reconnect"), {
+          id: TOAST_ID,
+          // Stays up until the next node list arrives, however long reconnecting takes.
+          duration: Infinity,
+          // Set either way: updating the shown toast keeps any option left out, such as this one.
+          action: badData
+            ? { label: i18n.t("refresh"), onClick: () => window.location.reload() }
+            : undefined,
+        })
         toastShown = true
       },
     })
@@ -63,11 +68,16 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
     return () => socket.stop()
   }, [i18n])
 
+  const locations = useMemo(() => locationsOf(snapshot.nodes), [snapshot.nodes])
+  // Once the selected location has no nodes left, it has no tab left to show it is selected.
+  if (location !== ALL_LOCATIONS && !locations.has(location)) setLocation(ALL_LOCATIONS)
+
   const value = useMemo<MonitorState>(() => {
     const { nodes, charts } = snapshot
     const filteredNodes = filterNodes(nodes, { location, query })
     return {
       nodes,
+      locations,
       visibleNodes: filterByStatus(filteredNodes, status, now),
       summary: summarize(filteredNodes, now),
       charts,
@@ -79,7 +89,7 @@ export function MonitorProvider({ children }: { children: ReactNode }) {
       query,
       setQuery,
     }
-  }, [snapshot, now, status, location, query])
+  }, [snapshot, locations, now, status, location, query])
 
   return <MonitorContext.Provider value={value}>{children}</MonitorContext.Provider>
 }

@@ -40,6 +40,8 @@ function serve(nodes: NodeData[]) {
 }
 
 const nodeRow = (name: string) => screen.getByRole("button", { name })
+/** The list item of a node, holding its toggle button and metrics. */
+const nodeCard = (name: string) => nodeRow(name).closest("li")!
 const visibleNodes = () =>
   ["tokyo", "frankfurt", "mystery"].filter((name) => screen.queryByRole("button", { name }))
 
@@ -51,6 +53,7 @@ beforeEach(() => {
 describe("App", () => {
   it("connects and lists the nodes the server sends", () => {
     renderApp()
+    expect(screen.getByRole("heading", { level: 1, name: "AIO Monitor" })).toBeInTheDocument()
     expect(screen.getByText("Waiting for nodes...")).toBeInTheDocument()
 
     const socket = FakeWebSocket.latest()
@@ -69,7 +72,9 @@ describe("App", () => {
     renderApp()
     serve([tokyo(), frankfurt()])
 
-    const online = within(nodeRow("tokyo"))
+    const online = within(nodeCard("tokyo"))
+    // Inside the button, the metrics would be hidden from screen readers.
+    expect(within(nodeRow("tokyo")).queryByRole("progressbar")).not.toBeInTheDocument()
     expect(online.getByText("Online")).toBeInTheDocument()
     expect(online.getByText("1d 1h 1m 1s")).toBeInTheDocument()
     // CPU and RAM are both at 25%, the disk at 50%.
@@ -79,9 +84,15 @@ describe("App", () => {
     expect(online.getByText("2.00 Mbps")).toBeInTheDocument()
     expect(online.getByText("0.50 | 0.25 | 0.13")).toBeInTheDocument()
 
-    const offline = within(nodeRow("frankfurt"))
+    const offline = within(nodeCard("frankfurt"))
     expect(offline.getByText("Offline")).toBeInTheDocument()
     expect(offline.queryByText("1d 1h 1m 1s")).not.toBeInTheDocument()
+    // Reported an hour ago; rendering may take place a second later.
+    expect(offline.getByText(/^0d 1h 0m [01]s$/)).toBeInTheDocument()
+
+    // Fleet-wide totals over the online node.
+    expect(screen.getByTitle("CPU usage")).toHaveTextContent("25.00%")
+    expect(screen.getByTitle("Total memory")).toHaveTextContent("8.00 GB")
   })
 
   it("filters by status when a status card is clicked", async () => {
@@ -107,22 +118,34 @@ describe("App", () => {
     serve([tokyo(), frankfurt(), mystery()])
 
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent)
-    expect(tabs).toEqual(["All", "DE", "JP", "Unknown"])
+    expect(tabs).toEqual(["All 3", "DE 1", "JP 1", "Unknown 1"])
+    expect(screen.getByRole("tab", { name: "DE 1" })).toHaveAttribute("title", "Germany")
 
-    await user.click(screen.getByRole("tab", { name: "DE" }))
+    await user.click(screen.getByRole("tab", { name: "DE 1" }))
     expect(visibleNodes()).toEqual(["frankfurt"])
     expect(screen.getByRole("button", { name: "Total: 1" })).toBeInTheDocument()
 
-    await user.click(screen.getByRole("tab", { name: "Unknown" }))
+    await user.click(screen.getByRole("tab", { name: "Unknown 1" }))
     expect(visibleNodes()).toEqual(["mystery"])
 
-    await user.click(screen.getByRole("tab", { name: "All" }))
+    await user.click(screen.getByRole("tab", { name: "All 3" }))
     await user.type(screen.getByRole("searchbox", { name: "Filter" }), "TOK")
     expect(visibleNodes()).toEqual(["tokyo"])
 
     await user.type(screen.getByRole("searchbox", { name: "Filter" }), "xyz")
     expect(visibleNodes()).toEqual([])
     expect(screen.getByText("No nodes match the filters.")).toBeInTheDocument()
+  })
+
+  it("falls back to all locations once the selected one has no nodes left", async () => {
+    const { user } = renderApp()
+    const socket = serve([tokyo(), frankfurt()])
+    await user.click(screen.getByRole("tab", { name: "DE 1" }))
+    expect(visibleNodes()).toEqual(["frankfurt"])
+
+    act(() => socket.receiveNodes([tokyo()]))
+    expect(screen.getByRole("tab", { name: "All 1" })).toHaveAttribute("aria-selected", "true")
+    expect(visibleNodes()).toEqual(["tokyo"])
   })
 
   it("expands one node at a time to show its details", async () => {
@@ -167,6 +190,20 @@ describe("App", () => {
     ).toBeInTheDocument()
   })
 
+  it("offers a refresh for bad data only, not once the connection drops after it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    renderApp()
+    const socket = serve([tokyo()])
+    act(() => socket.receive("not a node list"))
+    expect(await screen.findByRole("button", { name: "Refresh" })).toBeInTheDocument()
+
+    act(() => socket.close())
+    expect(
+      await screen.findByText("WebSocket is disconnected, trying to reconnect..."),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
+  })
+
   it("takes nodes offline once their reports are stale, even while disconnected", () => {
     vi.useFakeTimers()
     try {
@@ -181,7 +218,7 @@ describe("App", () => {
       act(() => vi.advanceTimersByTime(2000))
       expect(screen.getByRole("button", { name: "Online: 0" })).toBeInTheDocument()
       expect(screen.getByRole("button", { name: "Offline: 1" })).toBeInTheDocument()
-      expect(within(nodeRow("tokyo")).getByText("Offline")).toBeInTheDocument()
+      expect(within(nodeCard("tokyo")).getByText("Offline")).toBeInTheDocument()
     } finally {
       vi.useRealTimers()
     }
@@ -193,7 +230,9 @@ describe("App", () => {
 
     await user.click(screen.getByRole("button", { name: "Change language" }))
     await user.click(await screen.findByRole("menuitem", { name: "Chinese" }))
-    expect(screen.getByText("节点监控")).toBeInTheDocument()
+    expect(screen.getByRole("tab", { name: "全部 1" })).toBeInTheDocument()
+    // The name is not translated.
+    expect(screen.getByRole("heading", { level: 1, name: "AIO Monitor" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "在线: 1" })).toBeInTheDocument()
     expect(document.documentElement.lang).toBe("zh")
   })

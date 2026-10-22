@@ -76,7 +76,7 @@ export function NodeDetails({ node }: { node: NodeData }) {
   const { t, i18n } = useTranslation()
   const { host, stats } = node
   const code = node.geoip
-  const location = countryName(code, i18n.resolvedLanguage ?? "en") ?? t("unknown")
+  const location = countryName(code, i18n.resolvedLanguage) ?? t("unknown")
 
   return (
     <div className="grid grid-cols-1 content-start gap-3 md:w-1/3">

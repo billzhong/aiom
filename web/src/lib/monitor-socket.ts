@@ -11,8 +11,11 @@ const DEFAULT_PATH = "/ws"
 /** Delay between receiving a node list and asking for the next, in ms. */
 const POLL_INTERVAL = 1000
 
-/** Delay before reconnecting, in ms. */
+/** Delay before the first reconnect, in ms; it doubles with every failed attempt in a row. */
 const RECONNECT_DELAY = 5000
+
+/** Longest delay between reconnects, in ms. */
+const MAX_RECONNECT_DELAY = 60_000
 
 /** Reconnect when a ping is not answered within this many ms. */
 const RESPONSE_TIMEOUT = 10_000
@@ -31,8 +34,6 @@ export function resolveSocketUrl(url: string | undefined, base: string): string 
 export type MonitorError =
   /** The connection closed; a reconnect is scheduled. */
   | "disconnected"
-  /** Too many reconnects failed in a row; no further attempts are made. */
-  | "gave-up"
   /** The server sent something that is not a node list. */
   | "bad-data"
 
@@ -40,8 +41,6 @@ interface MonitorSocketOptions {
   url: string
   onNodes: (nodes: NodeData[]) => void
   onError: (error: MonitorError) => void
-  /** Reconnects to attempt after a disconnect before giving up. */
-  maxReconnectAttempts?: number
 }
 
 /** Decodes a gzip-compressed JSON node list. */
@@ -54,10 +53,11 @@ export function decodeNodes(data: ArrayBuffer): NodeData[] {
 /**
  * Polls the server for the node list over a WebSocket: sends a ping, waits for the answer,
  * then pings again after `POLL_INTERVAL`. Reconnects when the connection drops or the server
- * stops answering.
+ * stops answering, backing off while attempts keep failing, but never giving up: a dashboard can
+ * stay open for days. Waiting is cut short when the browser goes back online or the page is shown.
  */
 export class MonitorSocket {
-  private readonly options: Required<MonitorSocketOptions>
+  private readonly options: MonitorSocketOptions
   private socket: WebSocket | null = null
   private failedAttempts = 0
   private stopped = true
@@ -66,18 +66,22 @@ export class MonitorSocket {
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined
 
   constructor(options: MonitorSocketOptions) {
-    this.options = { maxReconnectAttempts: 10, ...options }
+    this.options = options
   }
 
   start(): void {
     if (!this.stopped) return
     this.stopped = false
     this.failedAttempts = 0
+    window.addEventListener("online", this.reconnectNow)
+    document.addEventListener("visibilitychange", this.reconnectNow)
     this.connect()
   }
 
   stop(): void {
     this.stopped = true
+    window.removeEventListener("online", this.reconnectNow)
+    document.removeEventListener("visibilitychange", this.reconnectNow)
     this.clearTimers()
     const socket = this.socket
     this.socket = null
@@ -88,11 +92,6 @@ export class MonitorSocket {
   }
 
   private connect(): void {
-    if (this.failedAttempts >= this.options.maxReconnectAttempts) {
-      this.options.onError("gave-up")
-      return
-    }
-
     const socket = new WebSocket(this.options.url)
     socket.binaryType = "arraybuffer"
     socket.onopen = () => {
@@ -131,8 +130,17 @@ export class MonitorSocket {
     this.socket = null
     if (this.stopped) return
     this.options.onError("disconnected")
+    const delay = Math.min(RECONNECT_DELAY * 2 ** this.failedAttempts, MAX_RECONNECT_DELAY)
     this.failedAttempts += 1
-    this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_DELAY)
+    this.reconnectTimer = setTimeout(() => this.connect(), delay)
+  }
+
+  /** Skips the rest of the wait for a scheduled reconnect, unless the page is hidden. */
+  private readonly reconnectNow = (): void => {
+    // Listening only while started, a reconnect is pending exactly when there is no socket.
+    if (this.socket || document.visibilityState === "hidden") return
+    clearTimeout(this.reconnectTimer)
+    this.connect()
   }
 
   private clearTimers(): void {

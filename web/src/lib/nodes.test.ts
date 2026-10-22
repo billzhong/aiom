@@ -17,15 +17,19 @@ const offline = (name: string, overrides: NodeOverrides = {}) =>
   makeNode({ name, timestamp: NOW / 1000 - 3600, ...overrides })
 
 describe("locations", () => {
-  it("lists unique locations with unknown last", () => {
+  it("counts the nodes of each location, with unknown last", () => {
     const nodes = [
       makeNode({ geoip: "US" }),
       makeNode({ geoip: "" }),
       makeNode({ geoip: "DE" }),
       makeNode({ geoip: "US" }),
     ]
-    expect(locationsOf(nodes)).toEqual(["DE", "US", ""])
-    expect(locationsOf([])).toEqual([])
+    expect([...locationsOf(nodes)]).toEqual([
+      ["DE", 1],
+      ["US", 2],
+      ["", 1],
+    ])
+    expect(locationsOf([]).size).toBe(0)
   })
 })
 

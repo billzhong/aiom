@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react"
+import { type ComponentProps, memo } from "react"
 import { useTranslation } from "react-i18next"
 import { Area, AreaChart, CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts"
 
@@ -31,17 +31,13 @@ function ChartPanel({
 /** One row of a chart tooltip. */
 function ChartTooltipRow({ name, value }: { name: string; value: string }) {
   return (
-    <div className="flex min-w-[130px] items-center text-xs text-muted-foreground">
+    <div className="flex min-w-32.5 items-center text-xs text-muted-foreground">
       {name}
       <div className="ml-auto flex items-baseline gap-0.5 font-mono font-medium text-foreground tabular-nums">
         {value}
       </div>
     </div>
   )
-}
-
-function TimeAxis() {
-  return <XAxis dataKey="time" tickLine={false} axisLine={false} tickMargin={10} minTickGap={30} />
 }
 
 function PercentAxis() {
@@ -70,9 +66,24 @@ function lines(keys: readonly (keyof ChartPoint)[]) {
   ))
 }
 
-/** History charts of CPU, memory, network speed and connections. */
-export function NodeCharts({ history }: { history: ChartPoint[] }) {
-  const { t } = useTranslation()
+/**
+ * History charts of CPU, memory, network speed and connections. Memoized, as the row holding them
+ * re-renders on every node list, while the history of an offline node stays the same.
+ */
+export const NodeCharts = memo(function NodeCharts({ history }: { history: ChartPoint[] }) {
+  const { t, i18n } = useTranslation()
+  // Formatted here rather than when sampled, so the times follow a change of language.
+  const timeFormat = new Intl.DateTimeFormat(i18n.resolvedLanguage, { timeStyle: "medium" })
+  const timeAxis = (
+    <XAxis
+      dataKey="timestamp"
+      tickLine={false}
+      axisLine={false}
+      tickMargin={10}
+      minTickGap={30}
+      tickFormatter={(timestamp: number) => timeFormat.format(timestamp * 1000)}
+    />
+  )
   const tooltip = (format: (value: unknown) => string) => (
     <ChartTooltip
       cursor={false}
@@ -93,7 +104,7 @@ export function NodeCharts({ history }: { history: ChartPoint[] }) {
       <ChartPanel title={t("cpu")} config={{ cpu: { label: t("cpu"), color: "var(--chart-3)" } }}>
         <LineChart accessibilityLayer data={history} margin={{ left: -10, right: 10 }}>
           <CartesianGrid vertical={false} />
-          {TimeAxis()}
+          {timeAxis}
           {PercentAxis()}
           {percentTooltip}
           {lines(["cpu"])}
@@ -108,7 +119,7 @@ export function NodeCharts({ history }: { history: ChartPoint[] }) {
       >
         <AreaChart accessibilityLayer data={history} margin={{ left: -10, right: 10 }}>
           <CartesianGrid vertical={false} />
-          {TimeAxis()}
+          {timeAxis}
           {PercentAxis()}
           {percentTooltip}
           {(["ram", "swap"] as const).map((key) => (
@@ -134,7 +145,7 @@ export function NodeCharts({ history }: { history: ChartPoint[] }) {
       >
         <LineChart accessibilityLayer data={history} margin={{ left: 10, right: 10 }}>
           <CartesianGrid vertical={false} />
-          {TimeAxis()}
+          {timeAxis}
           <YAxis
             tickLine={false}
             axisLine={false}
@@ -155,7 +166,7 @@ export function NodeCharts({ history }: { history: ChartPoint[] }) {
       >
         <LineChart accessibilityLayer data={history} margin={{ left: 10, right: 10 }}>
           <CartesianGrid vertical={false} />
-          {TimeAxis()}
+          {timeAxis}
           <YAxis tickLine={false} axisLine={false} tickMargin={10} padding={{ top: 5 }} />
           <ChartTooltip cursor={false} content={<ChartTooltipContent hideLabel hideIndicator />} />
           {lines(["tcp", "udp"])}
@@ -163,4 +174,4 @@ export function NodeCharts({ history }: { history: ChartPoint[] }) {
       </ChartPanel>
     </div>
   )
-}
+})

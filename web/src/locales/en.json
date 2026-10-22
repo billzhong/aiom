@@ -10,7 +10,6 @@
     "zh": "Chinese",
     "toggle": "Change language"
   },
-  "subtitle": "Node Monitor",
   "total": "Total",
   "online": "Online",
   "offline": "Offline",
@@ -32,14 +31,25 @@
   "processes": "Processes",
   "connections": "Connections",
   "hardware": "Hardware",
+  "totals": {
+    "cores": "CPU cores",
+    "cpu-usage": "CPU usage",
+    "memory": "Total memory",
+    "memory-usage": "Memory usage",
+    "upload-speed": "Upload speed",
+    "uploaded": "Uploaded",
+    "download-speed": "Download speed",
+    "downloaded": "Downloaded"
+  },
+  "not-available": "N/A",
   "download": "Download",
   "upload": "Upload",
   "filter": "Filter",
   "websocket": {
     "error-reconnect": "WebSocket is disconnected, trying to reconnect...",
-    "error-max-attempts": "WebSocket has reached max attempts, please refresh the page...",
     "error-data": "WebSocket data error, please refresh the page..."
   },
+  "refresh": "Refresh",
   "waiting": "Waiting for nodes...",
   "no-match": "No nodes match the filters."
 }

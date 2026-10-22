@@ -5,8 +5,8 @@ import { formatPercent } from "@/lib/format"
 
 function levelClass(percent: number) {
   if (percent > 95) return "*:data-[slot=progress-indicator]:bg-destructive"
-  if (percent > 75) return "*:data-[slot=progress-indicator]:bg-chart-4"
-  return "*:data-[slot=progress-indicator]:bg-chart-2"
+  if (percent > 75) return "*:data-[slot=progress-indicator]:bg-warning"
+  return "*:data-[slot=progress-indicator]:bg-success"
 }
 
 /** The icon and name of a metric, above its value. */
@@ -30,7 +30,7 @@ export function UsageBar({
 }) {
   const value = Math.min(Math.max(percent, 0), 100)
   return (
-    <div className="min-w-[150px] flex-1 space-y-2">
+    <div className="min-w-37.5 flex-1 space-y-2">
       <div className="flex justify-between text-sm">
         <MetricLabel icon={icon}>{label}</MetricLabel>
         <span className="font-medium">{formatPercent(percent)}</span>

@@ -58,9 +58,8 @@ export type Status = "all" | "online" | "offline"
 
 /** One sample of a node's history charts. */
 export interface ChartPoint {
+  /** Unix timestamp in seconds. */
   timestamp: number
-  /** Formatted time of day. */
-  time: string
   /** Percent. */
   cpu: number
   /** Percent. */

@@ -29,7 +29,7 @@ export function NodeList() {
   }
 
   return (
-    <div className="flex flex-col gap-4 px-2">
+    <ul className="flex flex-col gap-4 px-2">
       {visibleNodes.map((node) => (
         <NodeItem
           key={node.name}
@@ -40,6 +40,6 @@ export function NodeList() {
           onToggle={toggle}
         />
       ))}
-    </div>
+    </ul>
   )
 }

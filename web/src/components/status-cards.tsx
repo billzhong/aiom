@@ -3,10 +3,11 @@ import {
   ArrowDown,
   ArrowUp,
   Cpu,
+  Gauge,
   HardDriveDownload,
   HardDriveUpload,
+  type LucideIcon,
   MemoryStick,
-  Percent,
   Power,
   PowerOff,
   Server,
@@ -17,7 +18,7 @@ import { useTranslation } from "react-i18next"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useMonitor } from "@/hooks/use-monitor"
-import { formatBitRate, formatBytes } from "@/lib/format"
+import { formatBitRate, formatBytes, formatPercent } from "@/lib/format"
 import type { Status } from "@/lib/types"
 
 function StatusCard({
@@ -55,12 +56,12 @@ function StatusCard({
       onClick={select}
       onKeyDown={onKeyDown}
       className={cn(
-        "@container/card py-2 transition-shadow hover:ring-2",
+        "@container/card col-span-2 py-2 transition-shadow hover:ring-2 @5xl/main:col-span-1",
         className,
         selected === status && selectedClassName,
       )}
     >
-      <CardHeader className="my-auto px-4">
+      <CardHeader className="my-auto px-3 @2xl/main:px-4">
         <CardDescription>{label}</CardDescription>
         <CardTitle className="mt-1 text-2xl tabular-nums">
           <div className="flex items-center gap-1">
@@ -73,14 +74,22 @@ function StatusCard({
 }
 
 interface Stat {
-  icon: ReactNode
+  icon: LucideIcon
+  /** What the figure is, shown on hover and read out instead of the icon. */
+  label: string
   value: string
 }
 
-function StatBadge({ icon, value, variant }: Stat & { variant: "outline" | "secondary" }) {
+function StatBadge({
+  icon: Icon,
+  label,
+  value,
+  variant,
+}: Stat & { variant: "outline" | "secondary" }) {
   return (
-    <Badge variant={variant} className="flex gap-1 rounded-lg text-xs">
-      {icon} {value}
+    <Badge variant={variant} className="flex gap-1 rounded-lg text-xs" title={label}>
+      <Icon className="size-3" aria-hidden />
+      <span className="sr-only">{label}:</span> {value}
     </Badge>
   )
 }
@@ -88,7 +97,7 @@ function StatBadge({ icon, value, variant }: Stat & { variant: "outline" | "seco
 /** A card of fleet-wide totals: two rows, each of a figure and a related second figure. */
 function TotalsCard({ title, rows }: { title: string; rows: [Stat, Stat][] }) {
   return (
-    <Card className="@container/card py-2">
+    <Card className="@container/card col-span-6 py-2 @2xl/main:col-span-3 @5xl/main:col-span-1">
       <CardHeader className="my-auto px-4">
         <CardDescription>{title}</CardDescription>
         <CardTitle className="flex flex-col gap-1 font-light tabular-nums">
@@ -110,7 +119,9 @@ export function StatusCards() {
   const { summary } = useMonitor()
 
   return (
-    <div className="grid grid-cols-1 gap-4 px-2 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card @2xl/main:grid-cols-2 @4xl/main:grid-cols-3 @5xl/main:grid-cols-5 dark:*:data-[slot=card]:bg-card">
+    // Six columns on smaller screens: the three counts share a row, as do the two totals cards
+    // once there is room. All five share one on large screens.
+    <div className="grid grid-cols-6 gap-3 px-2 *:data-[slot=card]:bg-linear-to-t *:data-[slot=card]:from-primary/5 *:data-[slot=card]:to-card @2xl/main:gap-4 @5xl/main:grid-cols-5 dark:*:data-[slot=card]:bg-card">
       <StatusCard
         status="all"
         label={t("total")}
@@ -121,15 +132,17 @@ export function StatusCards() {
         status="online"
         label={t("online")}
         count={summary.online}
-        icon={<Power className="size-5 animate-pulse text-chart-2" aria-hidden />}
-        className="hover:ring-chart-2"
-        selectedClassName="ring-2 ring-chart-2"
+        icon={<Power className="size-5 text-success motion-safe:animate-pulse" aria-hidden />}
+        className="hover:ring-success"
+        selectedClassName="ring-2 ring-success"
       />
       <StatusCard
         status="offline"
         label={t("offline")}
         count={summary.offline}
-        icon={<PowerOff className="size-5 animate-pulse text-destructive" aria-hidden />}
+        icon={
+          <PowerOff className="size-5 text-destructive motion-safe:animate-pulse" aria-hidden />
+        }
         className="hover:ring-destructive"
         selectedClassName="ring-2 ring-destructive"
       />
@@ -137,12 +150,20 @@ export function StatusCards() {
         title={t("hardware")}
         rows={[
           [
-            { icon: <Cpu className="size-3" />, value: String(summary.cpuCores) },
-            { icon: <Percent className="size-3" />, value: summary.cpuUsage.toFixed(2) },
+            { icon: Cpu, label: t("totals.cores"), value: String(summary.cpuCores) },
+            { icon: Gauge, label: t("totals.cpu-usage"), value: formatPercent(summary.cpuUsage) },
           ],
           [
-            { icon: <MemoryStick className="size-3" />, value: formatBytes(summary.totalMemory) },
-            { icon: <Percent className="size-3" />, value: summary.memoryUsage.toFixed(2) },
+            {
+              icon: MemoryStick,
+              label: t("totals.memory"),
+              value: formatBytes(summary.totalMemory),
+            },
+            {
+              icon: Gauge,
+              label: t("totals.memory-usage"),
+              value: formatPercent(summary.memoryUsage),
+            },
           ],
         ]}
       />
@@ -150,13 +171,26 @@ export function StatusCards() {
         title={t("network")}
         rows={[
           [
-            { icon: <ArrowUp className="size-3" />, value: formatBitRate(summary.uploadSpeed) },
-            { icon: <HardDriveUpload className="size-3" />, value: formatBytes(summary.uploaded) },
+            {
+              icon: ArrowUp,
+              label: t("totals.upload-speed"),
+              value: formatBitRate(summary.uploadSpeed),
+            },
+            {
+              icon: HardDriveUpload,
+              label: t("totals.uploaded"),
+              value: formatBytes(summary.uploaded),
+            },
           ],
           [
-            { icon: <ArrowDown className="size-3" />, value: formatBitRate(summary.downloadSpeed) },
             {
-              icon: <HardDriveDownload className="size-3" />,
+              icon: ArrowDown,
+              label: t("totals.download-speed"),
+              value: formatBitRate(summary.downloadSpeed),
+            },
+            {
+              icon: HardDriveDownload,
+              label: t("totals.downloaded"),
               value: formatBytes(summary.downloaded),
             },
           ],

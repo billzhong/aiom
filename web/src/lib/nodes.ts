@@ -1,17 +1,19 @@
 import { isOnline, percentOf } from "@/lib/format"
 import type { ChartPoint, Charts, NodeData, Status } from "@/lib/types"
 
-/** Number of samples kept per node for the history charts. */
-const MAX_CHART_POINTS = 20
+/** Number of samples kept per node for the history charts: 5 minutes at the default interval. */
+const MAX_CHART_POINTS = 300
 
 /** The tab value selecting nodes of every location. */
 export const ALL_LOCATIONS = "all"
 
-/** Country codes of all nodes, sorted, with unknown ("") last. */
-export function locationsOf(nodes: readonly NodeData[]): string[] {
-  const codes = [...new Set(nodes.map((node) => node.geoip))].sort()
+/** Number of nodes per country code, ordered by code, with unknown ("") last. */
+export function locationsOf(nodes: readonly NodeData[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const { geoip } of nodes) counts.set(geoip, (counts.get(geoip) ?? 0) + 1)
+  const codes = [...counts.keys()].sort()
   if (codes[0] === "") codes.push(codes.shift()!)
-  return codes
+  return new Map(codes.map((code) => [code, counts.get(code)!]))
 }
 
 export function filterNodes(
@@ -105,7 +107,6 @@ function chartPointOf(node: NodeData): ChartPoint {
   const { timestamp, host, stats } = node
   return {
     timestamp,
-    time: new Date(timestamp * 1000).toLocaleTimeString(),
     cpu: stats.cpu_usage,
     ram: percentOf(stats.used_memory, host.total_memory),
     swap: percentOf(stats.used_swap, host.total_swap),

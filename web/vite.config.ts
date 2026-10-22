@@ -20,9 +20,10 @@ export default defineConfig({
           groups: [
             {
               debugName: "vendor",
+              // No group for Recharts: it would pull in dependencies it shares with the entry, such
+              // as clsx, making the entry import it. Loaded lazily, it gets a chunk of its own.
               name(id) {
                 if (/\/node_modules\/(react|react-dom|scheduler)\//.test(id)) return "vendor-react"
-                if (/\/node_modules\/(recharts|d3-[^/]+)\//.test(id)) return "vendor-recharts"
                 if (id.includes("/node_modules/country-flag-icons/")) return "vendor-flags"
                 return null
               },

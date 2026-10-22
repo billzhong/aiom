@@ -6,6 +6,8 @@ import type { Charts, NodeData, Status } from "@/lib/types"
 export interface MonitorState {
   /** All nodes, in the server's (natural name) order. */
   nodes: NodeData[]
+  /** Number of nodes per country code, ordered by code, with unknown ("") last. */
+  locations: Map<string, number>
   /** Nodes matching the location, name and status filters. */
   visibleNodes: NodeData[]
   /** Totals over the nodes matching the location and name filters. */

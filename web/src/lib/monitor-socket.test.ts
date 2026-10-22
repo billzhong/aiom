@@ -10,14 +10,13 @@ import {
 import type { NodeData } from "@/lib/types"
 import { encodePayload, FakeWebSocket, makeNode } from "@/test/fixtures"
 
-function setup(options: { maxReconnectAttempts?: number } = {}) {
+function setup() {
   const received: NodeData[][] = []
   const errors: MonitorError[] = []
   const monitor = new MonitorSocket({
     url: "ws://monitor.test/ws",
     onNodes: (nodes) => received.push(nodes),
     onError: (error) => errors.push(error),
-    ...options,
   })
   return { monitor, received, errors }
 }
@@ -119,30 +118,60 @@ describe("MonitorSocket", () => {
     monitor.stop()
   })
 
-  it("gives up after too many failed reconnects in a row", () => {
-    const { monitor, errors } = setup({ maxReconnectAttempts: 3 })
+  it("backs off while reconnects keep failing, but never gives up", () => {
+    const { monitor, errors } = setup()
     monitor.start()
-    for (let attempt = 0; attempt < 3; attempt++) {
+    for (const delay of [5000, 10_000, 20_000, 40_000, 60_000, 60_000]) {
+      const count = FakeWebSocket.instances.length
       FakeWebSocket.latest().close()
-      vi.advanceTimersByTime(5000)
+      vi.advanceTimersByTime(delay - 1)
+      expect(FakeWebSocket.instances).toHaveLength(count)
+      vi.advanceTimersByTime(1)
+      expect(FakeWebSocket.instances).toHaveLength(count + 1)
     }
-    expect(FakeWebSocket.instances).toHaveLength(3)
-    expect(errors).toEqual(["disconnected", "disconnected", "disconnected", "gave-up"])
-    vi.advanceTimersByTime(60_000)
-    expect(FakeWebSocket.instances).toHaveLength(3)
+    expect(errors).toEqual(Array(6).fill("disconnected"))
     monitor.stop()
   })
 
-  it("resets the attempt count after a successful connection", () => {
-    const { monitor, errors } = setup({ maxReconnectAttempts: 2 })
+  it("resets the backoff after a successful connection", () => {
+    const { monitor } = setup()
     monitor.start()
     for (let i = 0; i < 5; i++) {
       FakeWebSocket.latest().open()
       FakeWebSocket.latest().close()
       vi.advanceTimersByTime(5000)
     }
-    expect(errors).not.toContain("gave-up")
     expect(FakeWebSocket.instances).toHaveLength(6)
+    monitor.stop()
+  })
+
+  it("reconnects at once when the browser is back online or the page is shown", () => {
+    const { monitor } = setup()
+    monitor.start()
+    FakeWebSocket.latest().close()
+    window.dispatchEvent(new Event("online"))
+    expect(FakeWebSocket.instances).toHaveLength(2)
+
+    FakeWebSocket.latest().close()
+    document.dispatchEvent(new Event("visibilitychange"))
+    expect(FakeWebSocket.instances).toHaveLength(3)
+
+    // The skipped wait does not connect a second time, and a live connection is left alone.
+    vi.advanceTimersByTime(60_000)
+    window.dispatchEvent(new Event("online"))
+    expect(FakeWebSocket.instances).toHaveLength(3)
+    monitor.stop()
+  })
+
+  it("keeps waiting while the page is hidden", () => {
+    const { monitor } = setup()
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden")
+    monitor.start()
+    FakeWebSocket.latest().close()
+    document.dispatchEvent(new Event("visibilitychange"))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    vi.advanceTimersByTime(5000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
     monitor.stop()
   })
 
@@ -168,6 +197,7 @@ describe("MonitorSocket", () => {
 
     expect(socket.closed).toBe(true)
     vi.advanceTimersByTime(60_000)
+    window.dispatchEvent(new Event("online"))
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(socket.sent).toEqual([PING])
     expect(errors).toEqual([])
