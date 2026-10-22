@@ -74,8 +74,8 @@ describe("protocol", () => {
     }
   })
 
-  it("decodes the node list as the server encodes it", () => {
-    const nodes = decodeNodes(encodePayload(fixture))
+  it("decodes the node list as the server encodes it", async () => {
+    const nodes = await decodeNodes(await encodePayload(fixture))
     expect(nodes.map((node) => node.name)).toEqual(["tokyo-1", "unknown-location"])
     expect(nodes[0].host.cpu_count).toBe(2)
     expect(nodes[1].geoip).toBe("")

@@ -1,5 +1,3 @@
-import { decompressSync, strFromU8 } from "fflate"
-
 import type { NodeData } from "@/lib/types"
 
 /** Text frame asking the server for the node list. */
@@ -44,8 +42,9 @@ interface MonitorSocketOptions {
 }
 
 /** Decodes a gzip-compressed JSON node list. */
-export function decodeNodes(data: ArrayBuffer): NodeData[] {
-  const nodes: unknown = JSON.parse(strFromU8(decompressSync(new Uint8Array(data))))
+export async function decodeNodes(data: ArrayBuffer): Promise<NodeData[]> {
+  const json = new Response(data).body!.pipeThrough(new DecompressionStream("gzip"))
+  const nodes: unknown = await new Response(json).json()
   if (!Array.isArray(nodes)) throw new TypeError("node list is not an array")
   return nodes as NodeData[]
 }
@@ -98,17 +97,22 @@ export class MonitorSocket {
       this.failedAttempts = 0
       this.ping()
     }
-    socket.onmessage = (event: MessageEvent) => this.receive(event.data)
+    // Browsers ignore the returned promise; tests wait on it.
+    socket.onmessage = (event: MessageEvent) => this.receive(socket, event.data)
     socket.onclose = () => this.reconnect()
     this.socket = socket
   }
 
-  private receive(data: unknown): void {
+  private async receive(socket: WebSocket, data: unknown): Promise<void> {
     clearTimeout(this.responseTimer)
     try {
       if (!(data instanceof ArrayBuffer)) throw new TypeError("expected a binary message")
-      this.options.onNodes(decodeNodes(data))
+      const nodes = await decodeNodes(data)
+      // The connection may have been stopped or replaced while decoding.
+      if (socket !== this.socket) return
+      this.options.onNodes(nodes)
     } catch (error) {
+      if (socket !== this.socket) return
       console.error("Invalid node list:", error)
       this.options.onError("bad-data")
     }

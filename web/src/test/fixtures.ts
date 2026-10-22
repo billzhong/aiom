@@ -1,5 +1,3 @@
-import { gzipSync, strToU8 } from "fflate"
-
 import type { Host, NodeData, Stats } from "@/lib/types"
 
 export const nowSeconds = () => Math.floor(Date.now() / 1000)
@@ -52,9 +50,9 @@ export function makeNode({ host, stats, ...overrides }: NodeOverrides = {}): Nod
 }
 
 /** Encodes a value like the server does: gzip-compressed JSON. */
-export function encodePayload(value: unknown): ArrayBuffer {
-  const bytes = gzipSync(strToU8(JSON.stringify(value)))
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer
+export function encodePayload(value: unknown): Promise<ArrayBuffer> {
+  const json = new Response(JSON.stringify(value)).body!
+  return new Response(json.pipeThrough(new CompressionStream("gzip"))).arrayBuffer()
 }
 
 /** Stands in for the browser WebSocket; tests drive the server side. */
@@ -77,7 +75,7 @@ export class FakeWebSocket {
   sent: string[] = []
   closed = false
   onopen: ((event: Event) => void) | null = null
-  onmessage: ((event: MessageEvent) => void) | null = null
+  onmessage: ((event: MessageEvent) => unknown) | null = null
   onclose: ((event: CloseEvent) => void) | null = null
   onerror: ((event: Event) => void) | null = null
 
@@ -106,11 +104,12 @@ export class FakeWebSocket {
     this.onopen?.(new Event("open"))
   }
 
-  receive(data: unknown) {
-    this.onmessage?.(new MessageEvent("message", { data }))
+  /** Delivers a message and waits until the client has handled it. */
+  async receive(data: unknown) {
+    await this.onmessage?.(new MessageEvent("message", { data }))
   }
 
-  receiveNodes(nodes: NodeData[]) {
-    this.receive(encodePayload(nodes))
+  async receiveNodes(nodes: NodeData[]) {
+    await this.receive(await encodePayload(nodes))
   }
 }

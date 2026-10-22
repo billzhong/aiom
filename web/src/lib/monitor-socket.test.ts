@@ -32,14 +32,23 @@ afterEach(() => {
 })
 
 describe("decodeNodes", () => {
-  it("decodes gzip-compressed JSON", () => {
-    const nodes = [makeNode()]
-    expect(decodeNodes(encodePayload(nodes))).toEqual(nodes)
+  it("decodes gzip-compressed JSON", async () => {
+    const nodes = [makeNode({ name: "東京-α" })]
+    expect(await decodeNodes(await encodePayload(nodes))).toEqual(nodes)
   })
 
-  it("rejects payloads that are not node lists", () => {
-    expect(() => decodeNodes(encodePayload({ not: "a list" }))).toThrow("node list is not an array")
-    expect(() => decodeNodes(new TextEncoder().encode("plain").buffer)).toThrow("unexpected EOF")
+  it("rejects payloads that are not node lists", async () => {
+    await expect(decodeNodes(await encodePayload({ not: "a list" }))).rejects.toThrow(
+      "node list is not an array",
+    )
+  })
+
+  it("rejects payloads that are not gzip, or cut short", async () => {
+    // Engines word decompression errors differently; all throw a TypeError.
+    const plain = await new Response("plain").arrayBuffer()
+    await expect(decodeNodes(plain)).rejects.toBeInstanceOf(TypeError)
+    const truncated = (await encodePayload([makeNode()])).slice(0, -4)
+    await expect(decodeNodes(truncated)).rejects.toBeInstanceOf(TypeError)
   })
 })
 
@@ -60,7 +69,7 @@ describe("resolveSocketUrl", () => {
 })
 
 describe("MonitorSocket", () => {
-  it("pings on open and again after each answer", () => {
+  it("pings on open and again after each answer", async () => {
     const { monitor, received } = setup()
     monitor.start()
     const socket = FakeWebSocket.latest()
@@ -72,7 +81,7 @@ describe("MonitorSocket", () => {
     expect(socket.sent).toEqual([PING])
 
     const nodes = [makeNode()]
-    socket.receiveNodes(nodes)
+    await socket.receiveNodes(nodes)
     expect(received).toEqual([nodes])
     expect(socket.sent).toHaveLength(1)
 
@@ -83,19 +92,19 @@ describe("MonitorSocket", () => {
     monitor.stop()
   })
 
-  it("keeps polling after a bad message", () => {
+  it("keeps polling after a bad message", async () => {
     const { monitor, received, errors } = setup()
     vi.spyOn(console, "error").mockImplementation(() => {})
     monitor.start()
     const socket = FakeWebSocket.latest()
     socket.open()
 
-    socket.receive("not binary")
+    await socket.receive("not binary")
     expect(errors).toEqual(["bad-data"])
     vi.advanceTimersByTime(1000)
     expect(socket.sent).toEqual([PING, PING])
 
-    socket.receiveNodes([])
+    await socket.receiveNodes([])
     expect(received).toEqual([[]])
     monitor.stop()
   })
@@ -187,12 +196,12 @@ describe("MonitorSocket", () => {
     monitor.stop()
   })
 
-  it("stops without reconnecting or reporting errors", () => {
+  it("stops without reconnecting or reporting errors", async () => {
     const { monitor, errors } = setup()
     monitor.start()
     const socket = FakeWebSocket.latest()
     socket.open()
-    socket.receiveNodes([])
+    await socket.receiveNodes([])
     monitor.stop()
 
     expect(socket.closed).toBe(true)
@@ -200,6 +209,41 @@ describe("MonitorSocket", () => {
     window.dispatchEvent(new Event("online"))
     expect(FakeWebSocket.instances).toHaveLength(1)
     expect(socket.sent).toEqual([PING])
+    expect(errors).toEqual([])
+  })
+
+  it("drops an answer still decoding when the connection closes", async () => {
+    const { monitor, received, errors } = setup()
+    monitor.start()
+    const first = FakeWebSocket.latest()
+    first.open()
+    const answer = first.receive(await encodePayload([makeNode()]))
+    first.close()
+    await answer
+    expect(received).toEqual([])
+    expect(errors).toEqual(["disconnected"])
+
+    // No poll is left behind to ping the next connection early.
+    vi.advanceTimersByTime(5000)
+    const second = FakeWebSocket.latest()
+    second.open()
+    vi.advanceTimersByTime(1000)
+    expect(second.sent).toEqual([PING])
+    monitor.stop()
+  })
+
+  it("drops an answer still decoding when stopped", async () => {
+    const { monitor, received, errors } = setup()
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    monitor.start()
+    const socket = FakeWebSocket.latest()
+    socket.open()
+    const good = await encodePayload([makeNode()])
+    const bad = await new Response("not gzip").arrayBuffer()
+    const answers = [socket.receive(good), socket.receive(bad)]
+    monitor.stop()
+    await Promise.all(answers)
+    expect(received).toEqual([])
     expect(errors).toEqual([])
   })
 

@@ -29,12 +29,12 @@ function renderApp() {
   return { user }
 }
 
-/** Opens the connection and sends `nodes` as the server would. */
-function serve(nodes: NodeData[]) {
+/** Sends `nodes` as the server would, opening the connection first if needed. */
+async function serve(nodes: NodeData[]) {
   const socket = FakeWebSocket.latest()
-  act(() => {
+  await act(async () => {
     if (socket.readyState !== FakeWebSocket.OPEN) socket.open()
-    socket.receiveNodes(nodes)
+    await socket.receiveNodes(nodes)
   })
   return socket
 }
@@ -51,26 +51,30 @@ beforeEach(() => {
 })
 
 describe("App", () => {
-  it("connects and lists the nodes the server sends", () => {
+  it("connects and lists the nodes the server sends", async () => {
     renderApp()
     expect(screen.getByRole("heading", { level: 1, name: "AIO Monitor" })).toBeInTheDocument()
     expect(screen.getByText("Waiting for nodes...")).toBeInTheDocument()
+    expect(screen.getByRole("link", { name: "AIO Monitor" })).toHaveAttribute(
+      "href",
+      "https://github.com/billzhong/aiom",
+    )
 
     const socket = FakeWebSocket.latest()
     expect(socket.url).toBe("ws://monitor.test/ws")
     act(() => socket.open())
     expect(socket.sent).toEqual([PING])
 
-    serve([tokyo(), frankfurt()])
+    await serve([tokyo(), frankfurt()])
     expect(visibleNodes()).toEqual(["tokyo", "frankfurt"])
     expect(screen.getByRole("button", { name: "Total: 2" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Online: 1" })).toBeInTheDocument()
     expect(screen.getByRole("button", { name: "Offline: 1" })).toBeInTheDocument()
   })
 
-  it("shows the status and live metrics of each node", () => {
+  it("shows the status and live metrics of each node", async () => {
     renderApp()
-    serve([tokyo(), frankfurt()])
+    await serve([tokyo(), frankfurt()])
 
     const online = within(nodeCard("tokyo"))
     // Inside the button, the metrics would be hidden from screen readers.
@@ -97,7 +101,7 @@ describe("App", () => {
 
   it("filters by status when a status card is clicked", async () => {
     const { user } = renderApp()
-    serve([tokyo(), frankfurt()])
+    await serve([tokyo(), frankfurt()])
 
     await user.click(screen.getByRole("button", { name: "Online: 1" }))
     expect(visibleNodes()).toEqual(["tokyo"])
@@ -115,7 +119,7 @@ describe("App", () => {
 
   it("filters by location and name", async () => {
     const { user } = renderApp()
-    serve([tokyo(), frankfurt(), mystery()])
+    await serve([tokyo(), frankfurt(), mystery()])
 
     const tabs = screen.getAllByRole("tab").map((tab) => tab.textContent)
     expect(tabs).toEqual(["All 3", "DE 1", "JP 1", "Unknown 1"])
@@ -139,18 +143,18 @@ describe("App", () => {
 
   it("falls back to all locations once the selected one has no nodes left", async () => {
     const { user } = renderApp()
-    const socket = serve([tokyo(), frankfurt()])
+    await serve([tokyo(), frankfurt()])
     await user.click(screen.getByRole("tab", { name: "DE 1" }))
     expect(visibleNodes()).toEqual(["frankfurt"])
 
-    act(() => socket.receiveNodes([tokyo()]))
+    await serve([tokyo()])
     expect(screen.getByRole("tab", { name: "All 1" })).toHaveAttribute("aria-selected", "true")
     expect(visibleNodes()).toEqual(["tokyo"])
   })
 
   it("expands one node at a time to show its details", async () => {
     const { user } = renderApp()
-    serve([tokyo(), frankfurt()])
+    await serve([tokyo(), frankfurt()])
     expect(screen.queryByText("AMD EPYC 7B13")).not.toBeInTheDocument()
 
     await user.click(nodeRow("tokyo"))
@@ -172,18 +176,18 @@ describe("App", () => {
     expect(screen.queryByText("Germany")).not.toBeInTheDocument()
   })
 
-  it("updates as new node lists arrive", () => {
+  it("updates as new node lists arrive", async () => {
     renderApp()
-    const socket = serve([tokyo()])
-    act(() => socket.receiveNodes([tokyo(), mystery()]))
+    await serve([tokyo()])
+    await serve([tokyo(), mystery()])
     expect(visibleNodes()).toEqual(["tokyo", "mystery"])
-    act(() => socket.receiveNodes([]))
+    await serve([])
     expect(visibleNodes()).toEqual([])
   })
 
   it("warns when the connection drops", async () => {
     renderApp()
-    const socket = serve([tokyo()])
+    const socket = await serve([tokyo()])
     act(() => socket.close())
     expect(
       await screen.findByText("WebSocket is disconnected, trying to reconnect..."),
@@ -193,8 +197,8 @@ describe("App", () => {
   it("offers a refresh for bad data only, not once the connection drops after it", async () => {
     vi.spyOn(console, "error").mockImplementation(() => {})
     renderApp()
-    const socket = serve([tokyo()])
-    act(() => socket.receive("not a node list"))
+    const socket = await serve([tokyo()])
+    await act(() => socket.receive("not a node list"))
     expect(await screen.findByRole("button", { name: "Refresh" })).toBeInTheDocument()
 
     act(() => socket.close())
@@ -204,11 +208,11 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument()
   })
 
-  it("takes nodes offline once their reports are stale, even while disconnected", () => {
+  it("takes nodes offline once their reports are stale, even while disconnected", async () => {
     vi.useFakeTimers()
     try {
       renderApp()
-      const socket = serve([tokyo()])
+      const socket = await serve([tokyo()])
       act(() => socket.close())
 
       // Timestamps are whole seconds, so the report is up to a second older than it looks.
@@ -226,7 +230,7 @@ describe("App", () => {
 
   it("switches the language", async () => {
     const { user } = renderApp()
-    serve([tokyo()])
+    await serve([tokyo()])
 
     await user.click(screen.getByRole("button", { name: "Change language" }))
     await user.click(await screen.findByRole("menuitem", { name: "Chinese" }))

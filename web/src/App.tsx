@@ -6,9 +6,6 @@ import { NodeList } from "@/components/node-list"
 import { StatusCards } from "@/components/status-cards"
 import { Toaster } from "@/components/ui/sonner"
 
-// Read once: rendering has to stay pure.
-const year = new Date().getFullYear()
-
 export default function App() {
   return (
     // At least a screen tall, so that with few nodes the footer still ends the page.
@@ -35,7 +32,17 @@ export default function App() {
         </MonitorProvider>
       </main>
       <footer className="px-2 py-4 text-center">
-        <p className="text-sm text-muted-foreground">© {year} AIO Monitor</p>
+        <p className="text-sm text-muted-foreground">
+          Powered by{" "}
+          <a
+            href="https://github.com/billzhong/aiom"
+            target="_blank"
+            rel="noreferrer"
+            className="underline-offset-4 hover:text-foreground hover:underline"
+          >
+            AIO Monitor
+          </a>
+        </p>
       </footer>
       <Toaster position="top-center" />
     </div>
