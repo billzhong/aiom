@@ -134,6 +134,12 @@ the dashboard only from `AIOM_WEB_DIR`.
 
 ## Configuration
 
+> [!IMPORTANT]
+> Keep the clocks on the server and the device running the dashboard synchronized, for example by
+> enabling automatic time synchronization. The dashboard compares the server's last-report timestamp
+> with the browser's clock; a difference of more than 30 seconds can make nodes appear offline even
+> while they are reporting normally.
+
 ### Server
 
 The server is configured through environment variables, a `.env` file in the working directory

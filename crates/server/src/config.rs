@@ -63,7 +63,12 @@ fn parse_route(s: &str) -> Result<String, String> {
     if !s.starts_with('/') || s.len() < 2 {
         return Err("must start with `/` and not be the root path".into());
     }
-    if s.contains(['{', '}', '*', '?', '#']) || s.chars().any(char::is_whitespace) {
+    // RFC 3986 path characters, which clients send unchanged; this leaves out the `{}` capture
+    // syntax of axum and anything a browser would percent-encode.
+    if !s
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b"-._~!$&'()*+,;=:@%/".contains(&b))
+    {
         return Err("must be a plain path".into());
     }
     Ok(s.to_owned())
@@ -107,10 +112,13 @@ mod tests {
     fn rejects_invalid_routes() {
         assert!(parse_route("/agent").is_ok());
         assert!(parse_route("/api/v1/ws").is_ok());
+        assert!(parse_route("/:ws").is_ok());
+        assert!(parse_route("/api/*").is_ok());
         assert!(parse_route("agent").is_err());
         assert!(parse_route("/").is_err());
         assert!(parse_route("/{id}").is_err());
         assert!(parse_route("/a b").is_err());
+        assert!(parse_route("/仪表盘").is_err());
     }
 
     #[test]

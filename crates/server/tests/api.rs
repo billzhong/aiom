@@ -401,22 +401,21 @@ async fn dashboard_ignores_other_messages() {
 
 #[tokio::test]
 async fn serves_custom_routes() {
+    // Matched literally, not as a capture and a wildcard.
     let server = TestServer::start(
-        &["--dashboard-path", "/live", "--agent-path", "/report"],
+        &["--dashboard-path", "/:live", "--agent-path", "/*report"],
         GeoIp::disabled(),
     )
     .await;
-    let mut agent = server.agent_at("/report", Some(TOKEN), &[]).await.unwrap();
+    let mut agent = server.agent_at("/*report", Some(TOKEN), &[]).await.unwrap();
     send_report(&mut agent, &report("custom", "")).await;
-    let mut dashboard = server.dashboard_at("/live").await;
+    let mut dashboard = server.dashboard_at("/:live").await;
     poll_until(&mut dashboard, |nodes| !nodes.is_empty()).await;
 
-    let default_route = reqwest_client()
-        .get(server.url("/ws"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(default_route.status(), 404);
+    for path in ["/ws", "/live", "/report"] {
+        let response = reqwest_client().get(server.url(path)).send().await.unwrap();
+        assert_eq!(response.status(), 404, "{path}");
+    }
     server.stop().await;
 }
 

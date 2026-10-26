@@ -103,7 +103,10 @@ impl App {
             self.token.clone(),
             auth::require_bearer,
         ));
+        // The configured routes are literal paths, so `:` and `*` match themselves instead of
+        // being refused as the capture syntax of axum before 0.8.
         let router = Router::new()
+            .without_v07_checks()
             .route(&self.dashboard_path, get(ws::dashboard::upgrade))
             .route(&self.agent_path, agent)
             .route(HEALTH_PATH, get(|| async { "ok" }));
