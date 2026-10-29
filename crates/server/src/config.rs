@@ -46,6 +46,9 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
+        validate_route(&self.dashboard_path)
+            .map_err(|error| format!("invalid dashboard path: {error}"))?;
+        validate_route(&self.agent_path).map_err(|error| format!("invalid agent path: {error}"))?;
         if self.dashboard_path == self.agent_path {
             return Err(format!(
                 "the dashboard and agent paths must differ (both are {:?})",
@@ -60,6 +63,11 @@ impl Config {
 }
 
 fn parse_route(s: &str) -> Result<String, String> {
+    validate_route(s)?;
+    Ok(s.to_owned())
+}
+
+fn validate_route(s: &str) -> Result<(), String> {
     if !s.starts_with('/') || s.len() < 2 {
         return Err("must start with `/` and not be the root path".into());
     }
@@ -71,7 +79,15 @@ fn parse_route(s: &str) -> Result<String, String> {
     {
         return Err("must be a plain path".into());
     }
-    Ok(s.to_owned())
+    // Browsers and the client URL parser remove `.` and `..` segments, including encoded dots,
+    // before sending a request, so a route the parser rewrites cannot be reached literally. The
+    // characters above are ones it leaves alone, so dot segments are all it can change.
+    if !reqwest::Url::parse(&format!("http://h{s}")).is_ok_and(|url| url.path() == s) {
+        return Err(
+            "must not contain `.` or `..` path segments, including percent-encoded dots".into(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -119,6 +135,47 @@ mod tests {
         assert!(parse_route("/{id}").is_err());
         assert!(parse_route("/a b").is_err());
         assert!(parse_route("/仪表盘").is_err());
+    }
+
+    #[test]
+    fn rejects_dot_segments_in_configured_routes() {
+        for segment in [
+            ".", "..", "%2e", "%2E", ".%2e", ".%2E", "%2e.", "%2E.", "%2e%2e", "%2E%2e", "%2e%2E",
+            "%2E%2E",
+        ] {
+            for route in [
+                format!("/{segment}/ws"),
+                format!("/api/{segment}/ws"),
+                format!("/api/{segment}"),
+            ] {
+                assert!(parse_route(&route).is_err(), "{route}");
+            }
+        }
+    }
+
+    #[test]
+    fn accepts_dots_within_normal_route_segments() {
+        for route in [
+            "/.well-known/ws",
+            "/api/v1.0/ws",
+            "/.../ws",
+            "/%2e%2e%2e/ws",
+            "/name%2eext/ws",
+            "/%252e/ws",
+        ] {
+            assert_eq!(parse_route(route).unwrap(), route);
+        }
+    }
+
+    #[test]
+    fn validates_routes_set_without_clap() {
+        let mut config = parse(&["--token", "t"]).unwrap();
+        config.dashboard_path = "/api/../ws".into();
+        assert!(config.validate().is_err());
+
+        config.dashboard_path = "/ws".into();
+        config.agent_path = "/%2e/agent".into();
+        assert!(config.validate().is_err());
     }
 
     #[test]

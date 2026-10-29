@@ -255,6 +255,32 @@ describe("App", () => {
     expect(document.documentElement).not.toHaveClass("dark")
   })
 
+  it("renders and receives nodes when the browser blocks storage", async () => {
+    vi.spyOn(window, "localStorage", "get").mockImplementation(() => {
+      throw new DOMException("Storage is blocked", "SecurityError")
+    })
+    const systemTheme = window.matchMedia("(prefers-color-scheme: dark)")
+    vi.spyOn(window, "matchMedia").mockReturnValue({ ...systemTheme, matches: true })
+    renderApp()
+    await serve([tokyo()])
+
+    expect(nodeRow("tokyo")).toBeInTheDocument()
+    expect(document.documentElement).toHaveClass("dark")
+  })
+
+  it("switches the theme even when saving the preference fails", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("Storage is full", "QuotaExceededError")
+    })
+    const { user } = renderApp()
+
+    await user.click(screen.getByRole("button", { name: "Toggle theme" }))
+    await user.click(await screen.findByRole("menuitem", { name: "Dark" }))
+
+    expect(document.documentElement).toHaveClass("dark")
+    expect(localStorage.getItem(THEME_STORAGE_KEY)).toBeNull()
+  })
+
   it("closes the connection when unmounted", () => {
     const { unmount } = render(
       <ThemeProvider>

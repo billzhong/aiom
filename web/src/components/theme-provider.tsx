@@ -13,8 +13,12 @@ function subscribeToSystemTheme(onChange: () => void) {
 const systemPrefersDark = () => window.matchMedia(DARK_QUERY).matches
 
 function storedTheme(): Theme {
-  const value = localStorage.getItem(THEME_STORAGE_KEY)
-  return value === "dark" || value === "light" ? value : "system"
+  try {
+    const value = localStorage.getItem(THEME_STORAGE_KEY)
+    return value === "dark" || value === "light" ? value : "system"
+  } catch {
+    return "system"
+  }
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -33,7 +37,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => ({
       theme,
       setTheme: (next: Theme) => {
-        localStorage.setItem(THEME_STORAGE_KEY, next)
+        try {
+          localStorage.setItem(THEME_STORAGE_KEY, next)
+        } catch {
+          // The theme can still change when the browser blocks storage or its quota is full.
+        }
         setThemeState(next)
       },
     }),
