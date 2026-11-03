@@ -24,10 +24,6 @@ pub struct Config {
     #[arg(long, env = "AIOM_AGENT_PATH", default_value = "/agent", value_parser = parse_route)]
     pub agent_path: String,
 
-    /// Optional ipinfo.io token, which raises the anonymous rate limit of IP geolocation.
-    #[arg(long, env = "AIOM_IPINFO_TOKEN", hide_env_values = true)]
-    pub ipinfo_token: Option<String>,
-
     /// Directory of the built dashboard (`web/dist`) to serve on all other routes, instead of
     /// the one built into the binary, if any.
     #[arg(long, env = "AIOM_WEB_DIR")]
@@ -35,11 +31,6 @@ pub struct Config {
 }
 
 impl Config {
-    /// The ipinfo.io token, treating an empty value as unset.
-    pub fn ipinfo_token(&self) -> Option<&str> {
-        self.ipinfo_token.as_deref().filter(|t| !t.is_empty())
-    }
-
     /// The dashboard directory, treating an empty value as unset.
     pub fn web_dir(&self) -> Option<&str> {
         self.web_dir.as_deref().filter(|d| !d.is_empty())
@@ -105,15 +96,13 @@ mod tests {
         assert_eq!(config.listen, "0.0.0.0:3000");
         assert_eq!(config.dashboard_path, "/ws");
         assert_eq!(config.agent_path, "/agent");
-        assert_eq!(config.ipinfo_token(), None);
         assert_eq!(config.web_dir(), None);
         assert!(config.validate().is_ok());
     }
 
     #[test]
     fn empty_optional_values_are_unset() {
-        let config = parse(&["--token", "t", "--ipinfo-token", "", "--web-dir", ""]).unwrap();
-        assert_eq!(config.ipinfo_token(), None);
+        let config = parse(&["--token", "t", "--web-dir", ""]).unwrap();
         assert_eq!(config.web_dir(), None);
     }
 

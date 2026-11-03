@@ -63,7 +63,7 @@ fn start_client(name: &str, addr: SocketAddr, token: &str) -> Running {
     .unwrap();
     let (stop, signal) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
-        let mut collector = Collector::new();
+        let mut collector = Collector::new().unwrap();
         session::run(&config, &mut collector, async {
             signal.await.ok();
         })

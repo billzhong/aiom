@@ -29,7 +29,8 @@ run, no root required.
 - **Rich metrics**: CPU, memory, swap, disk, network traffic and speed, load average, TCP and
   UDP connections, processes and uptime, plus OS, CPU model, architecture and virtualization.
 - **Geolocation**: nodes are placed on a country by the address they connect from, through
-  [ipinfo.io](https://ipinfo.io).
+  [ipinfo.io](https://ipinfo.io), falling back to [GeoJS](https://www.geojs.io). Neither needs
+  an API key.
 - **Modern dashboard**: built with React, Tailwind CSS and shadcn/ui. Per-node history charts,
   filtering by country and name, light and dark themes, English and Chinese.
 - **Deploy anywhere**: one multi-arch Docker image or a single prebuilt binary that serves the
@@ -151,7 +152,6 @@ The server is configured through environment variables, a `.env` file in the wor
 | `AIOM_LISTEN`         | `--listen`         | `0.0.0.0:3000` | Address to listen on                                         |
 | `AIOM_DASHBOARD_PATH` | `--dashboard-path` | `/ws`          | Dashboard WebSocket route (public, read-only)                |
 | `AIOM_AGENT_PATH`     | `--agent-path`     | `/agent`       | Client WebSocket route (requires `Authorization: Bearer`)    |
-| `AIOM_IPINFO_TOKEN`   | `--ipinfo-token`   | _(unset)_      | ipinfo.io token, for geolocation beyond the anonymous limit  |
 | `AIOM_WEB_DIR`        | `--web-dir`        | _(unset)_      | Built dashboard to serve instead of the one in the binary    |
 | `RUST_LOG`            |                    | `info`         | Log filter, e.g. `debug` or `aiom_server=debug,info`         |
 

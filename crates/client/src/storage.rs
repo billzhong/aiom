@@ -1,5 +1,6 @@
-//! Identity of the storage behind a mount, which sysinfo does not expose. Mounts that show the
-//! same storage report the same capacity, which is to be counted once.
+//! Identity of the storage behind a mount, which sysinfo does not expose, and of the file system
+//! mounted there. Mounts that show the same storage report the same capacity, which is to be
+//! counted once.
 
 use std::ffi::OsString;
 #[cfg(any(target_os = "linux", test))]
@@ -16,9 +17,10 @@ pub(crate) struct Storage {
 
 /// Identifies the storage behind each of the disks:
 ///
-/// - Linux: the mounted device, or the dataset of a ZFS pool. Bind mounts and btrfs
-///   subvolumes repeat the device of the file system. An overlay shows the storage of its
-///   upper layer, when that is mounted here too; otherwise it stands for itself.
+/// - Linux: the mounted device, by the name it was mounted under (see [`device`]), or the
+///   dataset of a ZFS pool. Bind mounts and btrfs subvolumes repeat the device of the file
+///   system. An overlay shows the storage of its upper layer, when that is mounted here too;
+///   otherwise it stands for itself.
 /// - Windows: the volume GUID path, the same for every path a volume is mounted at.
 /// - macOS: the APFS container, whose volumes share its capacity, or else the device.
 ///
@@ -42,6 +44,17 @@ pub(crate) fn identify(disks: &[Disk]) -> Vec<Storage> {
             .collect();
     }
     disks.iter().map(own).collect()
+}
+
+/// The device of the file system mounted at `disk`. Mounts on one file system share its
+/// storage, which [`identify`] misses when their names differ: when the file system is mounted
+/// under another name, such as `/dev/root`, or when a later mount at the same point hides a
+/// mount, which then reports the space of the later one.
+///
+/// `None` on Windows, where this is the volume serial number, which cloned volumes share; the
+/// volume GUID path that [`identify`] gives is already the same at every path of a volume.
+pub(crate) fn device(disk: &Disk) -> Option<u64> {
+    if cfg!(unix) { disk.id() } else { None }
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
@@ -244,10 +257,10 @@ mod tests {
 
     #[test]
     fn identifies_every_disk() {
-        let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing());
-        let storages = identify(disks.list());
-        assert_eq!(storages.len(), disks.list().len());
-        for (disk, storage) in disks.list().iter().zip(storages) {
+        let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing()).unwrap();
+        let storages = identify(&disks);
+        assert_eq!(storages.len(), disks.len());
+        for (disk, storage) in disks.iter().zip(storages) {
             assert!(!storage.id.is_empty(), "{:?}", disk.mount_point());
         }
     }
@@ -347,9 +360,9 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn puts_the_system_volumes_in_one_container() {
-        let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing());
+        let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing()).unwrap();
         let id_at = |mount_point: &str| {
-            let disk = disks.list().iter().find(|d| d.mount_point() == mount_point);
+            let disk = disks.iter().find(|d| d.mount_point() == mount_point);
             disk.map(id)
         };
         if let (Some(system), Some(data)) = (id_at("/"), id_at("/System/Volumes/Data")) {

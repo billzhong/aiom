@@ -20,30 +20,25 @@ pub struct Collector {
     host: Host,
 }
 
-impl Default for Collector {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Collector {
-    pub fn new() -> Self {
+    /// Fails on platforms that sysinfo does not support.
+    pub fn new() -> Result<Self, sysinfo::Error> {
         let sys = System::new_with_specifics(
             RefreshKind::nothing()
                 .with_memory(MemoryRefreshKind::everything())
-                .with_cpu(CpuRefreshKind::nothing().with_cpu_usage()),
-        );
+                .with_cpu(CpuRefreshKind::nothing().with_usage()),
+        )?;
         let disks =
-            Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_storage());
+            Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing().with_storage())?;
         // Listed interfaces take their current counters as the baseline for the first speed.
-        let networks = Networks::new_with_refreshed_list();
+        let networks = Networks::new_with_refreshed_list()?;
         let last_network_refresh = Instant::now();
 
         let unknown = || "Unknown".to_owned();
         let host = Host {
             agent: env!("CARGO_PKG_VERSION").to_owned(),
-            os: System::name().unwrap_or_else(unknown),
-            os_version: System::os_version().unwrap_or_else(unknown),
+            os: System::name().unwrap_or_else(|_| unknown()),
+            os_version: System::os_version().unwrap_or_else(|_| unknown()),
             cpu: sys
                 .cpus()
                 .first()
@@ -56,13 +51,13 @@ impl Collector {
             v12n: crate::virt::detect().unwrap_or("none").to_owned(),
         };
 
-        Self {
+        Ok(Self {
             sys,
             disks,
             networks,
             last_network_refresh,
             host,
-        }
+        })
     }
 
     /// Facts about this host. The total memory, swap and disk space are as of the last
@@ -118,7 +113,8 @@ impl Collector {
         self.host.total_disk = total_disk;
         self.host.total_memory = self.sys.total_memory();
         self.host.total_swap = self.sys.total_swap();
-        let load = System::load_average();
+        // Windows has no load average.
+        let load = System::load_average().unwrap_or_default();
         let (tcp_count, udp_count) = connections.await.unwrap_or_else(|e| {
             log::error!("Counting connections failed: {e}");
             (0, 0)
@@ -133,8 +129,8 @@ impl Collector {
             network_out: network.total_transmitted,
             network_in_speed: network.receive_speed,
             network_out_speed: network.transmit_speed,
-            uptime: System::uptime(),
-            boot_time: System::boot_time(),
+            uptime: System::uptime().unwrap_or(0),
+            boot_time: System::boot_time().unwrap_or(0),
             load1: load.one,
             load5: load.five,
             load15: load.fifteen,
@@ -162,14 +158,14 @@ impl Collector {
 }
 
 fn disk_usage(disks: &Disks) -> (u64, u64) {
-    let storages = storage::identify(disks.list());
+    let storages = storage::identify(disks);
     metrics::disk_usage(
         disks
-            .list()
             .iter()
             .zip(&storages)
             .map(|(disk, storage)| DiskSpace {
                 storage: &storage.id,
+                device: storage::device(disk),
                 file_system: &storage.file_system,
                 total: disk.total_space(),
                 available: disk.available_space(),
@@ -184,7 +180,7 @@ mod tests {
 
     #[tokio::test]
     async fn collects_plausible_metrics() {
-        let mut collector = Collector::new();
+        let mut collector = Collector::new().unwrap();
         let host = collector.host().clone();
         assert_eq!(host.agent, env!("CARGO_PKG_VERSION"));
         assert!(!host.os.is_empty());

@@ -67,7 +67,7 @@ impl Client {
         .unwrap();
         let (shutdown, signal) = oneshot::channel::<()>();
         let task = tokio::spawn(async move {
-            let mut collector = Collector::new();
+            let mut collector = Collector::new().unwrap();
             session::run(&config, &mut collector, async {
                 signal.await.ok();
             })

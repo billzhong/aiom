@@ -512,7 +512,7 @@ async fn pings_dashboards_and_drops_those_that_do_not_answer() {
 #[tokio::test]
 async fn geolocates_each_address_once() {
     let (ipinfo, lookups) = fake_ipinfo().await;
-    let geoip = GeoIp::with_base_url(&ipinfo, None).unwrap();
+    let geoip = GeoIp::with_base_url(&ipinfo).unwrap();
     let server = TestServer::start(&[], geoip).await;
     let mut agent = server.agent().await;
     let mut dashboard = server.dashboard().await;
@@ -553,7 +553,7 @@ async fn geolocates_each_address_once() {
 #[tokio::test]
 async fn geolocates_the_address_a_client_connects_from() {
     let (ipinfo, _) = fake_ipinfo().await;
-    let geoip = GeoIp::with_base_url(&ipinfo, None).unwrap();
+    let geoip = GeoIp::with_base_url(&ipinfo).unwrap();
     let server = TestServer::start(&[], geoip).await;
     // Behind a reverse proxy, which tells where the client connected from.
     let mut agent = server

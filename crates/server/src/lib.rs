@@ -141,7 +141,7 @@ impl App {
 
 /// Runs the server described by `config` until SIGINT or SIGTERM.
 pub async fn run(config: Config) -> anyhow::Result<()> {
-    let geoip = GeoIp::ipinfo(config.ipinfo_token().map(str::to_owned))?;
+    let geoip = GeoIp::new()?;
     let app = App::new(&config, geoip)?;
     let listener = TcpListener::bind(&config.listen)
         .await

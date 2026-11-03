@@ -54,6 +54,9 @@ pub(crate) fn proc_process_count() -> u64 {
 pub(crate) struct DiskSpace<'a> {
     /// The storage behind the mount, see [`crate::storage::identify`].
     pub(crate) storage: &'a OsStr,
+    /// The device of the file system at the mount point, if known, see
+    /// [`crate::storage::device`].
+    pub(crate) device: Option<u64>,
     /// File system type of the storage, such as `ext4`.
     pub(crate) file_system: &'a OsStr,
     pub(crate) total: u64,
@@ -63,14 +66,20 @@ pub(crate) struct DiskSpace<'a> {
 /// Returns the total and used bytes over all disks.
 pub(crate) fn disk_usage<'a>(disks: impl IntoIterator<Item = DiskSpace<'a>>) -> (u64, u64) {
     let mut seen = HashSet::new();
+    let mut seen_devices = HashSet::new();
     // ZFS pool -> bytes used by its datasets, and the free space they share.
     let mut pools = HashMap::<&[u8], (u64, u64)>::new();
     let (mut total, mut used) = (0, 0);
     for disk in disks {
         // The same storage can be mounted several times: bind mounts, btrfs subvolumes and
         // overlays of containers on Linux, several paths of one Windows volume, or the volumes
-        // of one APFS container on macOS. These share storage and size.
-        if !seen.insert((disk.storage, disk.total)) {
+        // of one APFS container on macOS. These share storage and size. Either key tells,
+        // and both are recorded: btrfs subvolumes and overlays have devices of their own.
+        let new_storage = seen.insert((disk.storage, disk.total));
+        let new_device = disk
+            .device
+            .is_none_or(|device| seen_devices.insert((device, disk.total)));
+        if !(new_storage && new_device) {
             continue;
         }
         let disk_used = disk.total.saturating_sub(disk.available);
@@ -112,10 +121,14 @@ const VIRTUAL_INTERFACE_PREFIXES: &[&str] = &[
     "tap",
 ];
 
-pub(crate) fn is_virtual_interface(name: &str) -> bool {
-    VIRTUAL_INTERFACE_PREFIXES
+pub(crate) fn is_virtual_interface(name: &OsStr) -> bool {
+    has_prefix(name, VIRTUAL_INTERFACE_PREFIXES)
+}
+
+fn has_prefix(name: &OsStr, prefixes: &[&str]) -> bool {
+    prefixes
         .iter()
-        .any(|prefix| name.starts_with(prefix))
+        .any(|prefix| name.as_encoded_bytes().starts_with(prefix.as_bytes()))
 }
 
 /// Name prefixes of interfaces stacked on others, where the kernel names them by kind:
@@ -129,15 +142,13 @@ const STACKED_INTERFACE_PREFIXES: &[&str] = &["bond", "bridge", "vlan", "vEthern
 /// `sys_class_net` is the sysfs directory of network interfaces on Linux, where interfaces
 /// are named freely but the stacking is recorded: one above others, such as a bond, bridge,
 /// VLAN or VRF, has a `lower_<name>` link to each. Elsewhere the name tells.
-pub(crate) fn counts_traffic(name: &str, sys_class_net: Option<&Path>) -> bool {
+pub(crate) fn counts_traffic(name: &OsStr, sys_class_net: Option<&Path>) -> bool {
     if is_virtual_interface(name) {
         return false;
     }
     match sys_class_net {
         Some(dir) => !has_lower_interfaces(&dir.join(name)),
-        None => !STACKED_INTERFACE_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix)),
+        None => !has_prefix(name, STACKED_INTERFACE_PREFIXES),
     }
 }
 
@@ -229,9 +240,17 @@ mod tests {
     ) -> DiskSpace<'a> {
         DiskSpace {
             storage: OsStr::new(storage),
+            device: None,
             file_system: OsStr::new(file_system),
             total,
             available,
+        }
+    }
+
+    fn on(device: u64, disk: DiskSpace<'_>) -> DiskSpace<'_> {
+        DiskSpace {
+            device: Some(device),
+            ..disk
         }
     }
 
@@ -260,6 +279,37 @@ mod tests {
             disk("/dev/disk3", "apfs", 1000, 398),
         ];
         assert_eq!(disk_usage(apfs), (1000, 600));
+    }
+
+    #[test]
+    fn counts_each_file_system_once() {
+        // A mount hidden by a later one at its point reports the space of that one.
+        let stacked = [
+            on(0x700, disk("/dev/loop0", "ext4", 284, 84)),
+            on(0x700, disk("/dev/loop2", "ext4", 284, 84)),
+            on(0x700, disk("/dev/loop0", "ext4", 284, 84)),
+        ];
+        assert_eq!(disk_usage(stacked), (284, 200));
+
+        // The root as mounted by the kernel, and again under the name of its device.
+        let aliases = [
+            on(0x801, disk("/dev/root", "ext4", 100, 30)),
+            on(0x801, disk("/dev/sda1", "ext4", 100, 30)),
+        ];
+        assert_eq!(disk_usage(aliases), (100, 70));
+
+        // Each btrfs subvolume has a device of its own; the storage still tells.
+        let subvolumes = [
+            on(0x41, disk("/dev/vdb1", "btrfs", 314, 100)),
+            on(0x42, disk("/dev/vdb1", "btrfs", 314, 100)),
+        ];
+        assert_eq!(disk_usage(subvolumes), (314, 214));
+
+        let distinct = [
+            on(0x801, disk("/dev/sda1", "ext4", 100, 30)),
+            on(0x811, disk("/dev/sdb1", "ext4", 100, 30)),
+        ];
+        assert_eq!(disk_usage(distinct), (200, 140));
     }
 
     #[test]
@@ -311,10 +361,10 @@ mod tests {
             "utun3",
             "wg0",
         ] {
-            assert!(is_virtual_interface(name), "{name}");
+            assert!(is_virtual_interface(OsStr::new(name)), "{name}");
         }
         for name in ["eth0", "ens3", "enp0s31f6", "wlan0", "en0", "bond0"] {
-            assert!(!is_virtual_interface(name), "{name}");
+            assert!(!is_virtual_interface(OsStr::new(name)), "{name}");
         }
     }
 
@@ -362,7 +412,7 @@ mod tests {
     fn host_usage(sys_class_net: Option<&Path>, interfaces: &[(&str, u64)]) -> NetworkUsage {
         let counted = interfaces
             .iter()
-            .filter(|(name, _)| counts_traffic(name, sys_class_net))
+            .filter(|(name, _)| counts_traffic(OsStr::new(name), sys_class_net))
             .map(|&(_, bytes)| interface((bytes, bytes * 2), (bytes / 10, bytes / 5)));
         network_usage(counted, Duration::from_secs(1))
     }

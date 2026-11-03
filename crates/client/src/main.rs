@@ -32,7 +32,13 @@ async fn main() -> ExitCode {
         }
     };
 
-    let mut collector = Collector::new();
+    let mut collector = match Collector::new() {
+        Ok(collector) => collector,
+        Err(e) => {
+            log::error!("Collecting metrics is not possible here: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     session::run(&config, &mut collector, shutdown_signal()).await;
     ExitCode::SUCCESS
 }
