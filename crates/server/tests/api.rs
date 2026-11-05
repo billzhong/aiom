@@ -15,7 +15,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 use tokio::task::JoinHandle;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderName;
@@ -335,21 +335,39 @@ async fn accepts_reports_with_missing_and_unknown_fields() {
         .await
         .unwrap();
 
+    // Only the version and the name are required, and floats may be null.
+    let mut minimal = server.agent().await;
+    let payload = serde_json::json!({
+        "version": 1,
+        "data": {"name": "minimal", "stats": {"cpu_usage": null, "load1": 0.5}}
+    });
+    minimal
+        .send(Message::binary(encode(&payload).unwrap()))
+        .await
+        .unwrap();
+
     let mut dashboard = server.dashboard().await;
-    let nodes = poll_until(&mut dashboard, |nodes| !nodes.is_empty()).await;
-    assert_eq!(nodes[0].host.v12n, "kvm");
-    assert_eq!(nodes[0].stats.tcp_count, 7);
+    let nodes = poll_until(&mut dashboard, |nodes| nodes.len() == 2).await;
+    assert_eq!(nodes[0].name, "minimal");
+    assert_eq!((nodes[0].stats.cpu_usage, nodes[0].stats.load1), (0.0, 0.5));
+    assert_eq!(nodes[0].host, Host::default());
+    assert_eq!(nodes[1].host.v12n, "kvm");
+    assert_eq!(nodes[1].stats.tcp_count, 7);
     server.stop().await;
 }
 
 #[tokio::test]
 async fn closes_connection_on_unsupported_version() {
     let server = TestServer::default().await;
-    let mut agent = server.agent().await;
     let mut future = report("node", "");
     future.version = PROTOCOL_VERSION + 1;
-    send_report(&mut agent, &future).await;
-    assert_eq!(expect_close(&mut agent).await, Some(CloseCode::Protocol));
+    // A later version may change the data as well.
+    let reshaped = serde_json::json!({"version": PROTOCOL_VERSION + 1, "data": {"id": "node"}});
+    for payload in [encode(&future).unwrap(), encode(&reshaped).unwrap()] {
+        let mut agent = server.agent().await;
+        agent.send(Message::binary(payload)).await.unwrap();
+        assert_eq!(expect_close(&mut agent).await, Some(CloseCode::Protocol));
+    }
 
     let mut dashboard = server.dashboard().await;
     assert!(poll(&mut dashboard).await.is_empty());
@@ -365,6 +383,24 @@ async fn closes_connection_on_malformed_report() {
         .await
         .unwrap();
     assert_eq!(expect_close(&mut agent).await, Some(CloseCode::Invalid));
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn refuses_names_the_client_does_not_send() {
+    let server = TestServer::default().await;
+    for name in ["", " ", "node ", "\tnode"] {
+        let mut agent = server.agent().await;
+        send_report(&mut agent, &report(name, "")).await;
+        assert_eq!(
+            expect_close(&mut agent).await,
+            Some(CloseCode::Invalid),
+            "{name:?}"
+        );
+    }
+
+    let mut dashboard = server.dashboard().await;
+    assert!(poll(&mut dashboard).await.is_empty());
     server.stop().await;
 }
 
@@ -576,6 +612,83 @@ async fn geolocates_the_address_a_client_connects_from() {
 }
 
 #[tokio::test]
+async fn stores_reports_while_geolocating() {
+    let answer = Arc::new(Notify::new());
+    let wait = answer.clone();
+    let ipinfo = serve_fake(axum::Router::new().route(
+        "/{ip}/country",
+        axum::routing::get(move || {
+            let wait = wait.clone();
+            async move {
+                wait.notified().await;
+                "JP"
+            }
+        }),
+    ))
+    .await;
+    let server = TestServer::start(&[], GeoIp::with_base_url(&ipinfo).unwrap()).await;
+    let mut agent = server.agent().await;
+    let mut dashboard = server.dashboard().await;
+
+    // The report is stored while the service has not answered yet.
+    send_report(&mut agent, &report("tokyo", "192.0.2.1")).await;
+    let nodes = poll_until(&mut dashboard, |nodes| !nodes.is_empty()).await;
+    assert_eq!(nodes[0].geoip, "");
+
+    // Its country is filled in once found, without another report.
+    answer.notify_one();
+    poll_until(&mut dashboard, |nodes| nodes[0].geoip == "JP").await;
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn keeps_the_country_of_a_node_at_an_address_not_found() {
+    let (ipinfo, lookups) = fake_ipinfo().await;
+    let server = TestServer::start(&[], GeoIp::with_base_url(&ipinfo).unwrap()).await;
+    let mut agent = server.agent().await;
+    let mut dashboard = server.dashboard().await;
+    send_report(&mut agent, &report("tokyo", "192.0.2.1")).await;
+    poll_until(&mut dashboard, |nodes| {
+        nodes.first().is_some_and(|n| n.geoip == "JP")
+    })
+    .await;
+
+    // The fake service cannot place this address.
+    let mut moved = report("tokyo", "198.51.100.2");
+    for cpu_usage in [1.0, 2.0] {
+        moved.data.stats.cpu_usage = cpu_usage;
+        send_report(&mut agent, &moved).await;
+        let nodes = poll_until(&mut dashboard, |nodes| {
+            nodes[0].stats.cpu_usage == cpu_usage
+        })
+        .await;
+        assert_eq!(nodes[0].geoip, "JP");
+        // Also once the lookup is over.
+        let deadline = tokio::time::Instant::now() + TIMEOUT;
+        while lookups.load(Ordering::SeqCst) < 2 {
+            assert!(tokio::time::Instant::now() < deadline, "never looked up");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(poll(&mut dashboard).await[0].geoip, "JP");
+    assert_eq!(lookups.load(Ordering::SeqCst), 2);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn answers_close_frames() {
+    let server = TestServer::default().await;
+    for mut socket in [server.agent().await, server.dashboard().await] {
+        socket.close(None).await.unwrap();
+        // The server confirms before it closes the connection.
+        let reply = tokio::time::timeout(TIMEOUT, socket.next()).await.unwrap();
+        assert!(matches!(reply, Some(Ok(Message::Close(_)))), "{reply:?}");
+    }
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn serves_the_dashboard_from_a_directory() {
     let dir = tempfile::tempdir().unwrap();
     let index = format!(
@@ -673,8 +786,13 @@ async fn fake_ipinfo() -> (String, Arc<AtomicUsize>) {
             }
         }),
     );
+    (serve_fake(app).await, lookups)
+}
+
+/// Serves `app` on a free local port and returns its URL.
+async fn serve_fake(app: axum::Router) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await });
-    (url, lookups)
+    url
 }

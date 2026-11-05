@@ -1,11 +1,12 @@
-use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+use flate2::{Compression, bufread::MultiGzDecoder, write::GzEncoder};
 use serde::{Serialize, de::DeserializeOwned};
 use std::io::{self, Read, Write};
 
 /// Error returned by [`encode`] and [`decode`].
 #[derive(Debug, thiserror::Error)]
 pub enum CodecError {
-    #[error("invalid gzip stream: {0}")]
+    /// Compressing failed, or the input is not a valid gzip stream.
+    #[error("gzip error: {0}")]
     Compression(#[from] io::Error),
     #[error("invalid JSON: {0}")]
     Json(#[from] serde_json::Error),
@@ -16,22 +17,35 @@ pub enum CodecError {
 /// Serializes `value` as gzip-compressed JSON.
 pub fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CodecError> {
     // Serialize up front: streaming serde_json into the encoder issues one tiny write per token.
-    let json = serde_json::to_vec(value)?;
-    let mut encoder = GzEncoder::new(Vec::with_capacity(json.len() / 2), Compression::default());
-    encoder.write_all(&json)?;
-    Ok(encoder.finish()?)
+    Ok(deflate(&serde_json::to_vec(value)?)?)
+}
+
+/// Compresses `bytes` into one gzip member.
+fn deflate(bytes: &[u8]) -> io::Result<Vec<u8>> {
+    let mut encoder = GzEncoder::new(Vec::with_capacity(bytes.len() / 2), Compression::default());
+    encoder.write_all(bytes)?;
+    encoder.finish()
 }
 
 /// Deserializes gzip-compressed JSON, refusing to inflate more than `max_len` bytes so that a
 /// small malicious payload cannot exhaust memory.
 pub fn decode<T: DeserializeOwned>(bytes: &[u8], max_len: usize) -> Result<T, CodecError> {
-    let mut json = Vec::new();
+    Ok(serde_json::from_slice(&inflate(bytes, max_len)?)?)
+}
+
+/// Decompresses `bytes`, refusing to inflate more than `max_len` bytes. The gzip members of a
+/// multi-member stream are joined, while anything else after the first member is an error.
+pub(crate) fn inflate(bytes: &[u8], max_len: usize) -> Result<Vec<u8>, CodecError> {
+    // JSON inflates to a few times its compressed size.
+    let mut json = Vec::with_capacity(bytes.len().saturating_mul(4).min(max_len));
     let limit = u64::try_from(max_len).unwrap_or(u64::MAX).saturating_add(1);
-    GzDecoder::new(bytes).take(limit).read_to_end(&mut json)?;
+    MultiGzDecoder::new(bytes)
+        .take(limit)
+        .read_to_end(&mut json)?;
     if json.len() > max_len {
         return Err(CodecError::TooLarge { limit: max_len });
     }
-    Ok(serde_json::from_slice(&json)?)
+    Ok(json)
 }
 
 #[cfg(test)]
@@ -85,10 +99,25 @@ mod tests {
     }
 
     #[test]
+    fn joins_the_members_of_a_stream() {
+        let stream = [deflate(b"\"ab").unwrap(), deflate(b"c\"").unwrap()].concat();
+        assert_eq!(decode::<String>(&stream, 1_000).unwrap(), "abc");
+    }
+
+    #[test]
+    fn rejects_data_after_the_message() {
+        let trailing_garbage = [encode("abc").unwrap(), b"junk".to_vec()].concat();
+        let err = decode::<String>(&trailing_garbage, 1_000).unwrap_err();
+        assert!(matches!(err, CodecError::Compression(_)), "{err}");
+
+        let two_messages = [encode("abc").unwrap(), encode("def").unwrap()].concat();
+        let err = decode::<String>(&two_messages, 1_000).unwrap_err();
+        assert!(matches!(err, CodecError::Json(_)), "{err}");
+    }
+
+    #[test]
     fn rejects_invalid_json() {
-        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(b"{not json").unwrap();
-        let err = decode::<String>(&encoder.finish().unwrap(), 1_000).unwrap_err();
+        let err = decode::<String>(&deflate(b"{not json").unwrap(), 1_000).unwrap_err();
         assert!(matches!(err, CodecError::Json(_)), "{err}");
     }
 }

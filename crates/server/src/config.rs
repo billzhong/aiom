@@ -37,6 +37,7 @@ impl Config {
     }
 
     pub(crate) fn validate(&self) -> Result<(), String> {
+        parse_token(&self.token).map_err(|error| format!("invalid token: {error}"))?;
         validate_route(&self.dashboard_path)
             .map_err(|error| format!("invalid dashboard path: {error}"))?;
         validate_route(&self.agent_path).map_err(|error| format!("invalid agent path: {error}"))?;
@@ -111,6 +112,15 @@ mod tests {
         assert!(parse(&["--token", ""]).is_err());
         assert!(parse(&["--token", "has space"]).is_err());
         assert!(parse(&["--token", "naïve"]).is_err());
+    }
+
+    #[test]
+    fn validates_tokens_set_without_clap() {
+        let mut config = parse(&["--token", "t"]).unwrap();
+        for invalid in ["", "has space", "naïve"] {
+            config.token = invalid.into();
+            assert!(config.validate().is_err(), "{invalid:?}");
+        }
     }
 
     #[test]

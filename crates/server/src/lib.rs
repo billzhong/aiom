@@ -39,6 +39,9 @@ pub const HEALTH_PATH: &str = "/healthz";
 /// Dashboards poll about once a second; serve them all from one encoded node list.
 const DEFAULT_SNAPSHOT_TTL: Duration = Duration::from_millis(500);
 
+/// How long shutting down waits for open WebSockets to close, at most.
+const CLOSE_GRACE: Duration = Duration::from_secs(5);
+
 #[derive(Debug, Clone)]
 pub(crate) struct AppState {
     nodes: Arc<Nodes>,
@@ -46,7 +49,8 @@ pub(crate) struct AppState {
     snapshots: Arc<SnapshotCache>,
     keepalive: Keepalive,
     /// Set to `true` when the server shuts down. Open WebSockets are not tracked by the HTTP
-    /// server's graceful shutdown, so they watch this to close themselves.
+    /// server's graceful shutdown, so they watch this to close themselves, and are waited for
+    /// until they dropped their receiver.
     shutdown: watch::Sender<bool>,
 }
 
@@ -119,7 +123,8 @@ impl App {
             .with_state(self.state.clone())
     }
 
-    /// Serves requests on `listener` until `shutdown` completes, then closes open WebSockets.
+    /// Serves requests on `listener` until `shutdown` completes, then closes open WebSockets,
+    /// and returns once they are closed.
     pub async fn serve(
         self,
         listener: TcpListener,
@@ -135,7 +140,20 @@ impl App {
                 shutdown.await;
                 notify.send_replace(true);
             })
+            .await?;
+        // The runtime may end as soon as this returns, dropping open WebSockets before they sent
+        // their close frame, so wait for them to close.
+        let open = &self.state.shutdown;
+        if tokio::time::timeout(CLOSE_GRACE, open.closed())
             .await
+            .is_err()
+        {
+            tracing::warn!(
+                open = open.receiver_count(),
+                "dropping WebSockets that did not close in time"
+            );
+        }
+        Ok(())
     }
 }
 

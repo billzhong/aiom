@@ -1,6 +1,6 @@
 //! The public address a client connects from.
 
-use aiom_protocol::is_public;
+use aiom_protocol::as_public;
 use axum::http::HeaderMap;
 use std::net::{IpAddr, SocketAddr};
 
@@ -17,7 +17,9 @@ pub(crate) fn public_addr(headers: &HeaderMap, peer: Option<IpAddr>) -> Option<I
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .filter_map(parse_addr);
-    forwarded.chain(peer).find(|&ip| is_public(ip))
+    // A dual-stack listener sees IPv4 clients at IPv4 addresses mapped to IPv6, which
+    // `as_public` turns back into IPv4 addresses.
+    forwarded.chain(peer).find_map(as_public)
 }
 
 /// Parses an address as proxies write it, with or without a port.
@@ -79,5 +81,20 @@ mod tests {
         let local = headers(&[("x-forwarded-for", "10.0.0.1")]);
         let peer = Some(ip("198.51.100.1"));
         assert_eq!(public_addr(&local, peer), peer);
+    }
+
+    #[test]
+    fn unmaps_ipv4_addresses_mapped_to_ipv6() {
+        let mapped = Some(ip("::ffff:198.51.100.1"));
+        assert_eq!(
+            public_addr(&HeaderMap::new(), mapped),
+            Some(ip("198.51.100.1"))
+        );
+        let forwarded = headers(&[("x-forwarded-for", "::ffff:203.0.113.7")]);
+        assert_eq!(public_addr(&forwarded, None), Some(ip("203.0.113.7")));
+        assert_eq!(
+            public_addr(&HeaderMap::new(), Some(ip("::ffff:10.0.0.1"))),
+            None
+        );
     }
 }

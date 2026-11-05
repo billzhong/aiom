@@ -1,20 +1,22 @@
 //! IP geolocation through ipinfo.io, falling back to GeoJS.
 
-use aiom_protocol::is_public;
+use aiom_protocol::as_public;
 use anyhow::{Context, bail};
+use reqwest::StatusCode;
 use reqwest::redirect::Policy;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
 
 const IPINFO_URL: &str = "https://ipinfo.io";
 const GEOJS_URL: &str = "https://get.geojs.io";
 const TIMEOUT: Duration = Duration::from_secs(3);
-/// How long the country found for an address is reused.
+/// How long what the services answered for an address is reused, a country or none.
 const FOUND_TTL: Duration = Duration::from_secs(24 * 60 * 60);
-/// How long to wait before looking up an address again after a failure.
+/// How long to wait before looking up an address again after a failure, and before asking a
+/// service that rate limited us again.
 const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
 /// Cache size above which expired entries are dropped.
 const PRUNE_ABOVE: usize = 1024;
@@ -30,7 +32,14 @@ struct Resolver {
     http: reqwest::Client,
     /// Asked in order, until one of them finds the country.
     services: Vec<Service>,
-    cache: Mutex<HashMap<IpAddr, Arc<Lookup>>>,
+    cache: Mutex<Cache>,
+}
+
+#[derive(Debug, Default)]
+struct Cache {
+    lookups: HashMap<IpAddr, Arc<Lookup>>,
+    /// The size at which expired lookups are dropped next, once above [`PRUNE_ABOVE`].
+    prune_at: usize,
 }
 
 /// A geolocation service answering with the bare country code of an address.
@@ -38,6 +47,8 @@ struct Resolver {
 struct Service {
     api: Api,
     base_url: String,
+    /// Until when the service is not asked, after it rate limited us.
+    paused_until: Mutex<Option<Instant>>,
 }
 
 #[derive(Debug)]
@@ -52,6 +63,7 @@ impl Service {
         Self {
             api,
             base_url: base_url.trim_end_matches('/').to_owned(),
+            paused_until: Mutex::default(),
         }
     }
 
@@ -69,10 +81,19 @@ impl Service {
 #[derive(Debug)]
 struct Lookup {
     started: Instant,
-    /// The country an earlier lookup of the address found, kept when this one fails.
+    /// The country an earlier lookup of the address found, kept when this one finds none.
     previous: Option<String>,
-    /// The country found, or `None` when every service failed.
-    country: OnceCell<Option<String>>,
+    country: OnceCell<Outcome>,
+}
+
+/// What looking an address up came to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Outcome {
+    Found(String),
+    /// Every service answered, without a country, as for reserved addresses.
+    Unknown,
+    /// No service found the country, and some could not be asked.
+    Failed,
 }
 
 impl Lookup {
@@ -88,8 +109,8 @@ impl Lookup {
     fn is_fresh(&self, now: Instant) -> bool {
         let ttl = match self.country.get() {
             None => return true,
-            Some(Some(_)) => FOUND_TTL,
-            Some(None) => RETRY_AFTER,
+            Some(Outcome::Found(_) | Outcome::Unknown) => FOUND_TTL,
+            Some(Outcome::Failed) => RETRY_AFTER,
         };
         now < self.started + ttl
     }
@@ -97,13 +118,17 @@ impl Lookup {
     /// The country known for the address once this lookup completed: the one found, or else
     /// the one found before.
     fn known_country(&self) -> Option<&str> {
-        self.country.get()?.as_deref().or(self.previous.as_deref())
+        match self.country.get()? {
+            Outcome::Found(country) => Some(country),
+            Outcome::Unknown | Outcome::Failed => self.previous.as_deref(),
+        }
     }
 }
 
 impl GeoIp {
-    /// Looks addresses up on ipinfo.io, and on GeoJS when ipinfo.io fails, e.g. once its
-    /// anonymous rate limit is reached. Neither needs a token.
+    /// Looks addresses up on ipinfo.io, and on GeoJS when ipinfo.io does not find the country.
+    /// Once ipinfo.io rate limits, as when its anonymous limit is reached, only GeoJS is asked
+    /// for a while. Neither needs a token.
     pub fn new() -> anyhow::Result<Self> {
         Self::with_fallback(IPINFO_URL, GEOJS_URL)
     }
@@ -144,72 +169,126 @@ impl GeoIp {
     }
 
     /// Returns the country code of `ip`, or `None` when it is not a public address or it was
-    /// never found. Results are cached; failures are logged and retried after a while, and
-    /// keep the country found for the address before.
+    /// never found. Results are cached, answers without a country as long as countries;
+    /// failures are logged and retried after a while. Either keeps the country found for the
+    /// address before.
     pub async fn country_code(&self, ip: IpAddr) -> Option<String> {
         self.country_code_at(ip, Instant::now()).await
     }
 
     async fn country_code_at(&self, ip: IpAddr, now: Instant) -> Option<String> {
         let resolver = self.inner.as_ref()?;
-        if !is_public(ip) {
-            return None;
-        }
+        let ip = as_public(ip)?;
         let lookup = resolver.cached(ip, now);
-        lookup.country.get_or_init(|| resolver.lookup(ip)).await;
+        lookup
+            .country
+            .get_or_init(|| resolver.lookup(ip, now))
+            .await;
         lookup.known_country().map(str::to_owned)
     }
+
+    /// What [`country_code`](Self::country_code) returns for `ip` when it would not have to
+    /// wait for a lookup, else `None`. Starts no lookup itself.
+    pub(crate) fn known_country_code(&self, ip: IpAddr) -> Option<Option<String>> {
+        self.known_country_code_at(ip, Instant::now())
+    }
+
+    fn known_country_code_at(&self, ip: IpAddr, now: Instant) -> Option<Option<String>> {
+        let (Some(resolver), Some(ip)) = (self.inner.as_ref(), as_public(ip)) else {
+            return Some(None);
+        };
+        let cache = lock(&resolver.cache);
+        let lookup = cache
+            .lookups
+            .get(&ip)
+            .filter(|lookup| lookup.country.initialized() && lookup.is_fresh(now))?;
+        Some(lookup.known_country().map(str::to_owned))
+    }
+}
+
+/// Locks `mutex`, whose data no panic leaves inconsistent.
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl Resolver {
     /// Returns the cached lookup of `ip`, starting a new one when there is none or it expired.
     fn cached(&self, ip: IpAddr, now: Instant) -> Arc<Lookup> {
-        let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
-        let previous = match cache.get(&ip) {
+        let mut cache = lock(&self.cache);
+        let previous = match cache.lookups.get(&ip) {
             Some(lookup) if lookup.is_fresh(now) => return Arc::clone(lookup),
             Some(lookup) => lookup.known_country().map(str::to_owned),
             None => None,
         };
-        if cache.len() >= PRUNE_ABOVE {
-            cache.retain(|_, lookup| lookup.is_fresh(now));
+        if cache.lookups.len() >= cache.prune_at.max(PRUNE_ABOVE) {
+            cache.lookups.retain(|_, lookup| lookup.is_fresh(now));
+            // Pruning again only once the cache doubled keeps the cost of inserting constant on
+            // average, however many lookups are fresh.
+            cache.prune_at = 2 * cache.lookups.len();
         }
         let lookup = Arc::new(Lookup::new(now, previous));
-        cache.insert(ip, Arc::clone(&lookup));
+        cache.lookups.insert(ip, Arc::clone(&lookup));
         lookup
     }
 
     /// Asks each service in turn for the country of `ip`.
-    async fn lookup(&self, ip: IpAddr) -> Option<String> {
+    async fn lookup(&self, ip: IpAddr, now: Instant) -> Outcome {
+        let mut errors = Vec::new();
         for service in &self.services {
-            match self.query(service, ip).await {
-                Ok(code) => {
+            match self.query(service, ip, now).await {
+                Ok(Some(code)) => {
                     tracing::debug!(%ip, code, service = ?service.api, "geolocated");
-                    return Some(code);
+                    return Outcome::Found(code);
                 }
-                Err(e) => tracing::warn!(%ip, service = ?service.api, "geolocation failed: {e:#}"),
+                Ok(None) => {}
+                Err(e) => {
+                    tracing::debug!(%ip, service = ?service.api, "geolocation failed: {e:#}");
+                    errors.push(format!("{:?}: {e:#}", service.api));
+                }
             }
         }
-        None
+        if errors.is_empty() {
+            Outcome::Unknown
+        } else {
+            tracing::warn!(%ip, "geolocation failed: {}", errors.join("; "));
+            Outcome::Failed
+        }
     }
 
-    async fn query(&self, service: &Service, ip: IpAddr) -> anyhow::Result<String> {
-        let body = self
+    /// Asks `service` for the country of `ip`; `None` when it answers without one.
+    async fn query(
+        &self,
+        service: &Service,
+        ip: IpAddr,
+        now: Instant,
+    ) -> anyhow::Result<Option<String>> {
+        if lock(&service.paused_until).is_some_and(|until| now < until) {
+            bail!("paused after rate limiting");
+        }
+        let response = self
             .http
             .get(service.url(ip))
             .send()
             .await
-            .and_then(reqwest::Response::error_for_status)
+            .context("request failed")?;
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            *lock(&service.paused_until) = Some(now + RETRY_AFTER);
+            bail!("rate limited, pausing for {} s", RETRY_AFTER.as_secs());
+        }
+        let body = response
+            .error_for_status()
             .context("request failed")?
             .text()
             .await
             .context("failed to read response")?;
 
         let code = body.trim();
-        // Reserved ranges come back as e.g. "bogon" or nothing rather than a country.
-        if code.len() != 2 || !code.bytes().all(|b| b.is_ascii_uppercase()) {
-            bail!("unexpected response {code:?}");
+        if code.len() == 2 && code.bytes().all(|b| b.is_ascii_uppercase()) {
+            return Ok(Some(code.to_owned()));
         }
-        Ok(code.to_owned())
+        // Reserved ranges come back as e.g. "bogon" or nothing rather than a country.
+        tracing::debug!(%ip, service = ?service.api, "no country: {code:?}");
+        Ok(None)
     }
 }
 
@@ -219,6 +298,7 @@ mod tests {
     use axum::extract::Path;
     use axum::http::StatusCode;
     use axum::routing::get;
+    use std::net::Ipv4Addr;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn ip(s: &str) -> IpAddr {
@@ -233,10 +313,24 @@ mod tests {
         url
     }
 
-    /// A URL that nothing listens on.
-    fn unreachable_url() -> String {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        format!("http://{}", listener.local_addr().unwrap())
+    /// A URL whose server closes every connection right away. It keeps its port, which
+    /// another test could get otherwise.
+    async fn unreachable_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { while listener.accept().await.is_ok() {} });
+        url
+    }
+
+    /// Starts a service that is down and returns its URL and request counter.
+    async fn fake_down() -> (String, Arc<AtomicUsize>) {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        let app = axum::Router::new().fallback(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            async { StatusCode::SERVICE_UNAVAILABLE }
+        });
+        (serve(app).await, hits)
     }
 
     /// Starts a fake ipinfo.io and returns its URL and request counter.
@@ -338,7 +432,7 @@ mod tests {
     #[tokio::test]
     async fn falls_back_when_ipinfo_is_unreachable() {
         let (geojs, _) = fake_geojs().await;
-        let geoip = GeoIp::with_fallback(&unreachable_url(), &geojs).unwrap();
+        let geoip = GeoIp::with_fallback(&unreachable_url().await, &geojs).unwrap();
         assert_eq!(
             geoip.country_code(ip("1.1.1.1")).await.as_deref(),
             Some("AU")
@@ -347,12 +441,64 @@ mod tests {
 
     #[tokio::test]
     async fn yields_none_when_every_service_fails() {
-        let (geoip, ipinfo_hits, geojs_hits) = fakes_with_fallback().await;
-        assert_eq!(geoip.country_code(ip("192.0.2.1")).await, None);
-        assert_eq!(geoip.country_code(ip("192.0.2.1")).await, None);
+        let (down, down_hits) = fake_down().await;
+        let (geojs, geojs_hits) = fake_geojs().await;
+        let geoip = GeoIp::with_fallback(&down, &geojs).unwrap();
+        let (address, now) = (ip("8.8.8.8"), Instant::now());
+        assert_eq!(geoip.country_code_at(address, now).await, None);
+        assert_eq!(geoip.country_code_at(address, now).await, None);
         // Each service was asked once; the failure is cached until it is retried.
+        assert_eq!(down_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(geojs_hits.load(Ordering::SeqCst), 1);
+
+        // A service that is down is asked again with the next lookup.
+        assert_eq!(
+            geoip.country_code_at(address, now + RETRY_AFTER).await,
+            None
+        );
+        assert_eq!(down_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn keeps_answers_without_a_country_for_long() {
+        let (geoip, ipinfo_hits, geojs_hits) = fakes_with_fallback().await;
+        let (address, now) = (ip("192.0.2.1"), Instant::now());
+        // Neither service places this address, which is no failure to retry soon.
+        assert_eq!(geoip.country_code_at(address, now).await, None);
+        assert_eq!(
+            geoip.country_code_at(address, now + RETRY_AFTER).await,
+            None
+        );
         assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 1);
         assert_eq!(geojs_hits.load(Ordering::SeqCst), 1);
+
+        assert_eq!(geoip.country_code_at(address, now + FOUND_TTL).await, None);
+        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn pauses_a_service_that_rate_limits() {
+        let (geoip, ipinfo_hits, geojs_hits) = fakes_with_fallback().await;
+        let now = Instant::now();
+        // ipinfo.io rate limits this address, so GeoJS answers.
+        let rate_limited = geoip.country_code_at(ip("1.1.1.1"), now).await;
+        assert_eq!(rate_limited.as_deref(), Some("AU"));
+        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 1);
+
+        // For a while, only GeoJS is asked, which cannot place this one. Not having asked
+        // ipinfo.io, the lookup failed, and is retried soon.
+        let address = ip("8.8.8.8");
+        assert_eq!(geoip.country_code_at(address, now).await, None);
+        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+
+        let later = now + RETRY_AFTER;
+        let retried = geoip.country_code_at(address, later).await;
+        assert_eq!(retried.as_deref(), Some("US"));
+        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -386,7 +532,7 @@ mod tests {
         );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
 
-        // Failures are cached as well, until they are retried.
+        // Addresses the service does not place are cached as well.
         assert_eq!(geoip.country_code(ip("192.0.2.1")).await, None);
         assert_eq!(geoip.country_code(ip("192.0.2.1")).await, None);
         assert_eq!(hits.load(Ordering::SeqCst), 2);
@@ -398,20 +544,58 @@ mod tests {
         let lookup = Lookup::new(now, None);
         assert!(lookup.is_fresh(now + FOUND_TTL), "in flight");
 
-        lookup.country.set(None).unwrap();
+        lookup.country.set(Outcome::Failed).unwrap();
         assert!(lookup.is_fresh(now));
         assert!(!lookup.is_fresh(now + RETRY_AFTER));
 
         // A failure keeping an earlier country is retried just as soon.
         let kept = Lookup::new(now, Some("US".into()));
-        kept.country.set(None).unwrap();
+        kept.country.set(Outcome::Failed).unwrap();
         assert_eq!(kept.known_country(), Some("US"));
         assert!(!kept.is_fresh(now + RETRY_AFTER));
 
         let found = Lookup::new(now, None);
-        found.country.set(Some("US".into())).unwrap();
+        found.country.set(Outcome::Found("US".into())).unwrap();
         assert!(found.is_fresh(now + RETRY_AFTER));
         assert!(!found.is_fresh(now + FOUND_TTL));
+
+        // An answer without a country lasts as long, and keeps an earlier country too.
+        let unknown = Lookup::new(now, Some("US".into()));
+        unknown.country.set(Outcome::Unknown).unwrap();
+        assert_eq!(unknown.known_country(), Some("US"));
+        assert!(unknown.is_fresh(now + RETRY_AFTER));
+        assert!(!unknown.is_fresh(now + FOUND_TTL));
+    }
+
+    #[test]
+    fn prunes_expired_lookups_once_the_cache_doubled() {
+        let geoip = GeoIp::with_base_url("http://unused.invalid").unwrap();
+        let resolver = geoip.inner.as_ref().unwrap();
+        let now = Instant::now();
+        let mut next = 0x0808_0000_u32;
+        let mut add = |at: Instant, outcome: Outcome| {
+            next += 1;
+            let lookup = resolver.cached(IpAddr::V4(Ipv4Addr::from(next)), at);
+            lookup.country.set(outcome).unwrap();
+        };
+        let size = || resolver.cache.lock().unwrap().lookups.len();
+
+        for _ in 0..PRUNE_ABOVE {
+            add(now, Outcome::Failed);
+        }
+        // All still fresh, so none is dropped, and the cache may double before it is pruned
+        // again.
+        add(now, Outcome::Found("US".into()));
+        assert_eq!(size(), PRUNE_ABOVE + 1);
+        let later = now + RETRY_AFTER;
+        while size() < 2 * PRUNE_ABOVE {
+            add(later, Outcome::Found("US".into()));
+        }
+        assert_eq!(size(), 2 * PRUNE_ABOVE);
+
+        // Doubled, the failures that expired are dropped.
+        add(later, Outcome::Found("US".into()));
+        assert_eq!(size(), PRUNE_ABOVE + 1);
     }
 
     #[tokio::test]
@@ -462,8 +646,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn looks_up_mapped_ipv4_addresses_as_ipv4() {
+        let (url, hits) = fake_ipinfo().await;
+        let geoip = GeoIp::with_base_url(&url).unwrap();
+        assert_eq!(
+            geoip.country_code(ip("::ffff:8.8.8.8")).await.as_deref(),
+            Some("US")
+        );
+        assert_eq!(
+            geoip.country_code(ip("8.8.8.8")).await.as_deref(),
+            Some("US")
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn knows_only_completed_lookups() {
+        let (url, hits) = fake_ipinfo().await;
+        let geoip = GeoIp::with_base_url(&url).unwrap();
+        let (address, now) = (ip("8.8.8.8"), Instant::now());
+        assert_eq!(geoip.known_country_code_at(address, now), None);
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+
+        // In flight, as the fake takes 50 ms to answer, it is not known yet.
+        let lookup = tokio::spawn({
+            let geoip = geoip.clone();
+            async move { geoip.country_code_at(address, now).await }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(geoip.known_country_code_at(address, now), None);
+        assert_eq!(lookup.await.unwrap().as_deref(), Some("US"));
+
+        let known = geoip.known_country_code_at(address, now);
+        assert_eq!(known, Some(Some("US".into())));
+        let mapped = geoip.known_country_code_at(ip("::ffff:8.8.8.8"), now);
+        assert_eq!(mapped, Some(Some("US".into())));
+        // Once it expires, it has to be looked up again.
+        assert_eq!(geoip.known_country_code_at(address, now + FOUND_TTL), None);
+
+        // Addresses the service does not place are known as well.
+        assert_eq!(geoip.country_code_at(ip("192.0.2.1"), now).await, None);
+        assert_eq!(
+            geoip.known_country_code_at(ip("192.0.2.1"), now),
+            Some(None)
+        );
+
+        // Addresses that are never looked up are known to have no country.
+        assert_eq!(geoip.known_country_code_at(ip("10.0.0.1"), now), Some(None));
+        let disabled = GeoIp::disabled().known_country_code_at(address, now);
+        assert_eq!(disabled, Some(None));
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn unreachable_service_yields_none() {
-        let geoip = GeoIp::with_base_url(&unreachable_url()).unwrap();
+        let geoip = GeoIp::with_base_url(&unreachable_url().await).unwrap();
         assert_eq!(geoip.country_code(ip("8.8.8.8")).await, None);
     }
 

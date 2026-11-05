@@ -1,5 +1,8 @@
 use axum::extract::ws::{CloseFrame, Message, WebSocket, close_code};
 use bytes::Bytes;
+use std::convert::Infallible;
+use std::future::{Future, pending};
+use std::pin::pin;
 use std::time::Duration;
 use tokio::sync::watch;
 use tokio::time::{Instant, Interval, MissedTickBehavior, timeout, timeout_at};
@@ -8,6 +11,9 @@ use crate::AppState;
 
 pub(crate) mod agent;
 pub(crate) mod dashboard;
+
+/// How long closing waits for the peer to complete the closing handshake.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// How open WebSockets are kept in check.
 #[derive(Debug, Clone, Copy)]
@@ -29,6 +35,14 @@ impl Default for Keepalive {
             idle_timeout: Duration::from_secs(20),
         }
     }
+}
+
+/// What [`Connection::recv_or`] waited for.
+#[derive(Debug)]
+pub(crate) enum Event<T> {
+    Message(Message),
+    /// The other future completed first.
+    Done(T),
 }
 
 /// An open WebSocket, closed when the server shuts down.
@@ -59,6 +73,14 @@ impl Connection {
     /// Waits for the next data message. Returns `None` when the connection ends or goes
     /// silent, or once the server shuts down, after telling the peer that it is going away.
     pub(crate) async fn recv(&mut self) -> Option<Message> {
+        let Event::Message(message) = self.recv_or(pending::<Infallible>()).await?;
+        Some(message)
+    }
+
+    /// Like [`recv`](Self::recv), but also returns once `other` completes, while the
+    /// connection is kept in check as before.
+    pub(crate) async fn recv_or<T>(&mut self, other: impl Future<Output = T>) -> Option<Event<T>> {
+        let mut other = pin!(other);
         let mut deadline = Instant::now() + self.idle_timeout;
         loop {
             tokio::select! {
@@ -66,8 +88,13 @@ impl Connection {
                     Ok(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {
                         deadline = Instant::now() + self.idle_timeout;
                     }
-                    Ok(Some(Ok(Message::Close(_))) | None) => return None,
-                    Ok(Some(Ok(message))) => return Some(message),
+                    Ok(Some(Ok(Message::Close(_)))) => {
+                        // The reply is only queued so far.
+                        self.finish_close().await;
+                        return None;
+                    }
+                    Ok(None) => return None,
+                    Ok(Some(Ok(message))) => return Some(Event::Message(message)),
                     Ok(Some(Err(e))) => {
                         tracing::debug!("WebSocket error: {e}");
                         return None;
@@ -77,6 +104,7 @@ impl Connection {
                         return None;
                     }
                 },
+                value = &mut other => return Some(Event::Done(value)),
                 _ = self.ping.tick() => {
                     if !self.send(Message::Ping(Bytes::new())).await {
                         return None;
@@ -112,7 +140,19 @@ impl Connection {
             code,
             reason: reason.into(),
         };
-        self.send(Message::Close(Some(frame))).await;
+        if self.send(Message::Close(Some(frame))).await {
+            self.finish_close().await;
+        }
+    }
+
+    /// Completes the closing handshake: sends the reply to the close frame of the peer, which
+    /// the socket sends on its next use, or waits for the reply to ours. Gives up on a peer that
+    /// does not answer within [`CLOSE_TIMEOUT`].
+    async fn finish_close(&mut self) {
+        let _ = timeout(CLOSE_TIMEOUT, async {
+            while let Some(Ok(_)) = self.socket.recv().await {}
+        })
+        .await;
     }
 }
 

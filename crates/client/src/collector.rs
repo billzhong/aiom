@@ -1,4 +1,5 @@
 use aiom_protocol::{Host, PublicIp, Stats};
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::Instant;
 use sysinfo::{
@@ -18,6 +19,8 @@ pub struct Collector {
     /// Time of the previous network refresh, to turn byte counts into speeds.
     last_network_refresh: Instant,
     host: Host,
+    /// Metrics that failed in the previous sample, so that a failure is logged once.
+    failing: HashSet<&'static str>,
 }
 
 impl Collector {
@@ -57,6 +60,7 @@ impl Collector {
             networks,
             last_network_refresh,
             host,
+            failing: HashSet::new(),
         })
     }
 
@@ -73,7 +77,7 @@ impl Collector {
         metrics::public_ip(
             self.networks
                 .iter()
-                .filter(|(name, _)| !metrics::is_virtual_interface(name))
+                .filter(|(name, _)| metrics::has_host_addresses(name))
                 .flat_map(|(_, data)| data.ip_networks().iter().map(|network| network.addr)),
         )
     }
@@ -113,8 +117,9 @@ impl Collector {
         self.host.total_disk = total_disk;
         self.host.total_memory = self.sys.total_memory();
         self.host.total_swap = self.sys.total_swap();
-        // Windows has no load average.
-        let load = System::load_average().unwrap_or_default();
+        let load = self.or_zero("load average", System::load_average());
+        let uptime = self.or_zero("uptime", System::uptime());
+        let boot_time = self.or_zero("boot time", System::boot_time());
         let (tcp_count, udp_count) = connections.await.unwrap_or_else(|e| {
             log::error!("Counting connections failed: {e}");
             (0, 0)
@@ -129,14 +134,32 @@ impl Collector {
             network_out: network.total_transmitted,
             network_in_speed: network.receive_speed,
             network_out_speed: network.transmit_speed,
-            uptime: System::uptime().unwrap_or(0),
-            boot_time: System::boot_time().unwrap_or(0),
+            uptime,
+            boot_time,
             load1: load.one,
             load5: load.five,
             load15: load.fifteen,
             tcp_count,
             udp_count,
             process_count,
+        }
+    }
+
+    /// Returns the value of the metric `what`, or zero when it cannot be read, which is logged
+    /// when it starts failing. The platform may not have it, as Windows has no load average.
+    fn or_zero<T: Default>(&mut self, what: &'static str, value: Result<T, sysinfo::Error>) -> T {
+        match value {
+            Ok(value) => {
+                self.failing.remove(what);
+                value
+            }
+            Err(sysinfo::Error::Unsupported) => T::default(),
+            Err(e) => {
+                if self.failing.insert(what) {
+                    log::warn!("Reading the {what} failed, reporting 0 until it works: {e}");
+                }
+                T::default()
+            }
         }
     }
 
@@ -165,7 +188,7 @@ fn disk_usage(disks: &Disks) -> (u64, u64) {
             .zip(&storages)
             .map(|(disk, storage)| DiskSpace {
                 storage: &storage.id,
-                device: storage::device(disk),
+                device: storage.device,
                 file_system: &storage.file_system,
                 total: disk.total_space(),
                 available: disk.available_space(),

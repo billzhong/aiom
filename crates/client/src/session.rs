@@ -53,6 +53,10 @@ impl Config {
     }
 }
 
+/// How long shutting down waits for the close frame to be sent, at most, so that a stuck
+/// connection does not hold up the stop of a service.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 enum Outcome {
     Disconnected,
     Shutdown,
@@ -102,13 +106,21 @@ async fn session<F: Future<Output = ()>>(
     loop {
         tokio::select! {
             _ = interval.tick() => {
-                let Some(report) = build_report(&config.name, collector).await else {
-                    continue;
+                let report = async {
+                    let Some(report) = build_report(&config.name, collector).await else {
+                        return true;
+                    };
+                    let sent = within(config.retry, "send", write.send(Message::binary(report)));
+                    sent.await.inspect(|()| log::debug!("Report sent")).is_some()
                 };
-                if within(config.retry, "send", write.send(Message::binary(report))).await.is_none() {
-                    return Outcome::Disconnected;
+                // Shutting down does not wait for the report. A send still going is stuck on
+                // the connection, which is dropped without a close frame after part of a frame.
+                tokio::select! {
+                    () = &mut shutdown => return Outcome::Shutdown,
+                    connected = report => if !connected {
+                        return Outcome::Disconnected;
+                    },
                 }
-                log::debug!("Report sent");
             }
             // Reading keeps ping/pong flowing and notices a closed connection early.
             message = read.next() => {
@@ -121,7 +133,8 @@ async fn session<F: Future<Output = ()>>(
                 return Outcome::Disconnected;
             }
             () = &mut shutdown => {
-                if within(config.retry, "close", write.send(Message::Close(None))).await.is_some() {
+                let close = write.send(Message::Close(None));
+                if within(CLOSE_TIMEOUT.min(config.retry), "close", close).await.is_some() {
                     log::info!("WebSocket connection closed");
                 }
                 return Outcome::Shutdown;

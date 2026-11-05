@@ -249,14 +249,17 @@ it; to serve another build, extract it to a directory and point `AIOM_WEB_DIR` a
 
 ## Protocol
 
-Both channels carry gzip-compressed JSON in binary WebSocket frames.
+Apart from the dashboard's `ping`, both channels carry gzip-compressed JSON in binary WebSocket
+frames.
 
 - **Agent channel**: the client sends `{"version": 1, "timestamp", "data": {"name", "host",
   "stats", "ip"}}` every interval, where `ip` holds the public addresses of the interfaces the
   host reaches the internet from (empty behind NAT). The server geolocates the address the
-  client connects from, and falls back to `ip` when that one is not public. It closes the
-  connection with code 1002 for other versions, 1007 for malformed messages and 1008 while
-  another client is connected under the same name.
+  client connects from, and falls back to `ip` when that one is not public. Only `version` and
+  `name` are required: missing fields default to zero or empty, as do `null` floats. The server
+  closes the connection with code 1002 for other versions, 1007 for malformed messages or a name
+  that is empty or has surrounding whitespace, and 1008 while another client is connected under
+  the same name.
 - **Dashboard channel**: the dashboard sends the text frame `ping`, and the server answers with
   an array of `{"timestamp", "name", "host", "stats", "geoip"}`, sorted by name. `timestamp` is
   when the server last heard from the node.

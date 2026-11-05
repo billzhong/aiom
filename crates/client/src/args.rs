@@ -1,4 +1,4 @@
-use aiom_protocol::parse_token;
+use aiom_protocol::{parse_name, parse_token};
 use clap::Parser;
 use std::time::Duration;
 use url::Url;
@@ -40,14 +40,6 @@ impl Args {
     pub fn retry(&self) -> Duration {
         Duration::from_secs(self.retry)
     }
-}
-
-fn parse_name(s: &str) -> Result<String, String> {
-    let name = s.trim();
-    if name.is_empty() {
-        return Err("must not be empty".into());
-    }
-    Ok(name.to_owned())
 }
 
 fn parse_server_url(s: &str) -> Result<Url, String> {

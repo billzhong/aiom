@@ -3,8 +3,9 @@
 //! counted once.
 
 use std::ffi::OsString;
+use std::path::Path;
 #[cfg(any(target_os = "linux", test))]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use sysinfo::Disk;
 
 /// The storage behind a mount.
@@ -13,53 +14,90 @@ pub(crate) struct Storage {
     pub(crate) id: OsString,
     /// File system type, such as `ext4`.
     pub(crate) file_system: OsString,
+    /// The device of the file system, which tells mounts of one file system apart from others
+    /// when their [`id`](Self::id)s differ: when it is mounted under another name too, such as
+    /// `/dev/root`.
+    ///
+    /// `None` on Windows, where this is the volume serial number, which cloned volumes share;
+    /// the volume GUID path is already the same at every path of a volume.
+    pub(crate) device: Option<u64>,
 }
 
-/// Identifies the storage behind each of the disks:
+/// Identifies the storage that each of the disks shows. That is the file system visible at its
+/// mount point now, whose capacity sysinfo reports for every disk listed there, including
+/// those hidden by a later mount at the point, and those mounted since the list was made.
 ///
-/// - Linux: the mounted device, by the name it was mounted under (see [`device`]), or the
-///   dataset of a ZFS pool. Bind mounts and btrfs subvolumes repeat the device of the file
-///   system. An overlay shows the storage of its upper layer, when that is mounted here too;
-///   otherwise it stands for itself.
+/// - Linux: the mounted device, by the name it was mounted under, or the dataset of a ZFS
+///   pool. Bind mounts and btrfs subvolumes repeat the device of the file system. An overlay
+///   shows the storage of its upper layer, when that is mounted here too; otherwise it stands
+///   for itself.
 /// - Windows: the volume GUID path, the same for every path a volume is mounted at.
 /// - macOS: the APFS container, whose volumes share its capacity, or else the device.
 ///
-/// Falls back to the volume name when the platform cannot tell.
+/// Falls back to what sysinfo listed when the platform cannot tell.
 pub(crate) fn identify(disks: &[Disk]) -> Vec<Storage> {
-    let own = |disk: &Disk| Storage {
-        id: id(disk),
-        file_system: disk.file_system().to_owned(),
-    };
-    // Only overlays need the mount table, which is long on a host running containers.
     #[cfg(target_os = "linux")]
-    if disks.iter().any(|disk| disk.file_system() == "overlay") {
+    if needs_mount_table(disks) {
         let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
         let mounts: Vec<_> = mountinfo.lines().filter_map(Mount::parse).collect();
         return disks
             .iter()
             .map(|disk| {
-                overlay_backing(&mounts, disk.mount_point(), |path| path.exists())
-                    .map_or_else(|| own(disk), Mount::storage)
+                let names = shown_mount(&mounts, disk.mount_point(), |path| path.exists())
+                    .map_or_else(
+                        || mounted(disk),
+                        |mount| (mount.source.into(), mount.file_system.into()),
+                    );
+                storage(disk, names)
             })
             .collect();
     }
-    disks.iter().map(own).collect()
+    disks
+        .iter()
+        .map(|disk| storage(disk, mounted(disk)))
+        .collect()
 }
 
-/// The device of the file system mounted at `disk`. Mounts on one file system share its
-/// storage, which [`identify`] misses when their names differ: when the file system is mounted
-/// under another name, such as `/dev/root`, or when a later mount at the same point hides a
-/// mount, which then reports the space of the later one.
-///
-/// `None` on Windows, where this is the volume serial number, which cloned volumes share; the
-/// volume GUID path that [`identify`] gives is already the same at every path of a volume.
-pub(crate) fn device(disk: &Disk) -> Option<u64> {
-    if cfg!(unix) { disk.id() } else { None }
+/// Whether the disks need the mount table to tell their storage: an overlay does, and so do
+/// disks at one point, of which sysinfo cannot tell the visible one. The table is long on a
+/// host running containers.
+#[cfg(target_os = "linux")]
+fn needs_mount_table(disks: &[Disk]) -> bool {
+    let mut mount_points = std::collections::HashSet::new();
+    disks
+        .iter()
+        .any(|disk| disk.file_system() == "overlay" || !mount_points.insert(disk.mount_point()))
 }
 
+/// The storage at the mount point of `disk`, by the name and file system type given.
+fn storage(disk: &Disk, (id, file_system): (OsString, OsString)) -> Storage {
+    Storage {
+        id,
+        file_system,
+        device: device(disk.mount_point()),
+    }
+}
+
+/// The device of the file system at `mount_point` now. sysinfo has the one there when it
+/// listed the disk, which a later mount at the point changes.
+#[cfg(unix)]
+fn device(mount_point: &Path) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata(mount_point)
+        .ok()
+        .map(|metadata| metadata.dev())
+}
+
+#[cfg(not(unix))]
+fn device(_: &Path) -> Option<u64> {
+    None
+}
+
+/// The name of the storage at the mount point of `disk`, and its file system type. Linux
+/// tells only from the mount table, see [`identify`].
 #[cfg(not(any(windows, target_os = "macos")))]
-fn id(disk: &Disk) -> OsString {
-    disk.name().to_owned()
+fn mounted(disk: &Disk) -> (OsString, OsString) {
+    (disk.name().to_owned(), disk.file_system().to_owned())
 }
 
 /// One line of `/proc/self/mountinfo`, see proc_pid_mountinfo(5).
@@ -100,14 +138,6 @@ impl<'a> Mount<'a> {
         };
         unescape(layer).map(PathBuf::from)
     }
-
-    #[cfg(target_os = "linux")]
-    fn storage(&self) -> Storage {
-        Storage {
-            id: self.source.into(),
-            file_system: self.file_system.into(),
-        }
-    }
 }
 
 /// Undoes the octal escapes of the mount table, such as `\040` for a space.
@@ -136,36 +166,42 @@ fn unescape(field: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Returns the mount holding the layer whose capacity the overlay mounted at `mount_point`
-/// reports, if that is an overlay. `exists` tells whether a path exists here: an overlay
-/// mounted from another mount namespace, such as the host's when this runs in a container,
-/// names layers that do not, and the mounts holding them are not visible.
+/// Returns the mount whose storage `mount_point` shows, if anything is mounted there: the
+/// mount visible at the point, or, if that is an overlay, the mount holding the layer whose
+/// capacity it reports. `exists` tells whether a path exists here: an overlay mounted from
+/// another mount namespace, such as the host's when this runs in a container, names layers
+/// that do not, and the mounts holding them are not visible. Such an overlay stands for itself.
 #[cfg(any(target_os = "linux", test))]
-fn overlay_backing<'m, 'a>(
+fn shown_mount<'m, 'a>(
     mounts: &'m [Mount<'a>],
     mount_point: &Path,
     exists: impl Fn(&Path) -> bool,
 ) -> Option<&'m Mount<'a>> {
     // Of the mounts at one point, the last is visible.
-    let overlay = mounts.iter().rposition(|m| m.mount_point == mount_point)?;
-    if mounts[overlay].file_system != "overlay" {
-        return None;
+    let i = mounts.iter().rposition(|m| m.mount_point == mount_point)?;
+    let visible = &mounts[i];
+    if visible.file_system != "overlay" {
+        return Some(visible);
     }
-    let layer = mounts[overlay]
+    let backing = visible
         .overlay_layer()
-        .filter(|layer| exists(layer))?;
-    mounts
-        .iter()
-        .enumerate()
-        .filter(|&(i, m)| i != overlay && layer.starts_with(&m.mount_point))
-        // The innermost; `max_by_key` takes the last of equals, the visible one.
-        .max_by_key(|(_, m)| m.mount_point.components().count())
-        .map(|(_, m)| m)
+        .filter(|layer| exists(layer))
+        .and_then(|layer| {
+            mounts
+                .iter()
+                .enumerate()
+                .filter(|&(j, m)| j != i && layer.starts_with(&m.mount_point))
+                // The innermost; `max_by_key` takes the last of equals, the visible one.
+                .max_by_key(|(_, m)| m.mount_point.components().count())
+                .map(|(_, m)| m)
+        });
+    Some(backing.unwrap_or(visible))
 }
 
 #[cfg(windows)]
-fn id(disk: &Disk) -> OsString {
-    volume_guid_path(disk.mount_point()).unwrap_or_else(|| disk.name().to_owned())
+fn mounted(disk: &Disk) -> (OsString, OsString) {
+    let id = volume_guid_path(disk.mount_point()).unwrap_or_else(|| disk.name().to_owned());
+    (id, disk.file_system().to_owned())
 }
 
 /// Returns the volume GUID path of the volume mounted at `mount_point`, such as
@@ -196,18 +232,25 @@ fn volume_guid_path(mount_point: &std::path::Path) -> Option<OsString> {
 }
 
 #[cfg(target_os = "macos")]
-fn id(disk: &Disk) -> OsString {
-    match mounted_device(disk.mount_point()) {
-        Some(device) if disk.file_system() == "apfs" => apfs_container(&device).into(),
-        Some(device) => device.into(),
-        None => disk.name().to_owned(),
+fn mounted(disk: &Disk) -> (OsString, OsString) {
+    match mounted_file_system(disk.mount_point()) {
+        Some((device, file_system)) => {
+            let id = if file_system == "apfs" {
+                apfs_container(&device)
+            } else {
+                &device
+            };
+            (id.into(), file_system.into())
+        }
+        None => (disk.name().to_owned(), disk.file_system().to_owned()),
     }
 }
 
-/// Returns the device a file system is mounted from, such as `/dev/disk3s5`.
+/// Returns the device the file system visible at `mount_point` is mounted from, such as
+/// `/dev/disk3s5`, and its type, such as `apfs`.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-fn mounted_device(mount_point: &std::path::Path) -> Option<String> {
+fn mounted_file_system(mount_point: &Path) -> Option<(String, String)> {
     use std::os::unix::ffi::OsStrExt;
 
     let path = std::ffi::CString::new(mount_point.as_os_str().as_bytes()).ok()?;
@@ -219,13 +262,11 @@ fn mounted_device(mount_point: &std::path::Path) -> Option<String> {
         }
         stat.assume_init()
     };
-    let device = stat
-        .f_mntfromname
-        .iter()
-        .map(|&c| c as u8)
-        .take_while(|&c| c != 0)
-        .collect();
-    String::from_utf8(device).ok()
+    let text = |field: &[libc::c_char]| {
+        let bytes = field.iter().map(|&c| c as u8).take_while(|&c| c != 0);
+        String::from_utf8(bytes.collect()).ok()
+    };
+    Some((text(&stat.f_mntfromname)?, text(&stat.f_fstypename)?))
 }
 
 /// Returns the APFS container of a volume: `/dev/disk3s5`, and its snapshot `/dev/disk3s5s1`,
@@ -262,6 +303,10 @@ mod tests {
         assert_eq!(storages.len(), disks.len());
         for (disk, storage) in disks.iter().zip(storages) {
             assert!(!storage.id.is_empty(), "{:?}", disk.mount_point());
+            // sysinfo took the device when it listed the disk, and nothing was mounted since.
+            if cfg!(unix) {
+                assert_eq!(storage.device, disk.id(), "{:?}", disk.mount_point());
+            }
         }
     }
 
@@ -269,10 +314,10 @@ mod tests {
         mountinfo.lines().filter_map(Mount::parse).collect()
     }
 
-    /// Returns the source and file system of the mount holding the layer of the overlay at
-    /// `mount_point`, with every path existing.
-    fn backing<'a>(mounts: &[Mount<'a>], mount_point: &str) -> Option<(&'a str, &'a str)> {
-        overlay_backing(mounts, Path::new(mount_point), |_| true)
+    /// Returns the source and file system of the mount whose storage `mount_point` shows,
+    /// with every path existing.
+    fn shown<'a>(mounts: &[Mount<'a>], mount_point: &str) -> Option<(&'a str, &'a str)> {
+        shown_mount(mounts, Path::new(mount_point), |_| true)
             .map(|mount| (mount.source, mount.file_system))
     }
 
@@ -306,15 +351,18 @@ mod tests {
              81 25 0:55 / /readonly ro - overlay overlay ro,lowerdir=/srv/top:/var/lib/docker/bottom",
         );
         assert_eq!(
-            backing(&host, "/var/lib/docker/rootfs/overlayfs/3b2b"),
+            shown(&host, "/var/lib/docker/rootfs/overlayfs/3b2b"),
             Some(("/dev/vdb1", "btrfs"))
         );
-        assert_eq!(backing(&host, "/merged"), Some(("/dev/sda1", "ext4")));
+        assert_eq!(shown(&host, "/merged"), Some(("/dev/sda1", "ext4")));
         // The top lower layer, without an upper one.
-        assert_eq!(backing(&host, "/readonly"), Some(("/dev/sda1", "ext4")));
+        assert_eq!(shown(&host, "/readonly"), Some(("/dev/sda1", "ext4")));
         // Not overlays, or not mounted.
-        assert_eq!(backing(&host, "/var/lib/docker"), None);
-        assert_eq!(backing(&host, "/elsewhere"), None);
+        assert_eq!(
+            shown(&host, "/var/lib/docker"),
+            Some(("/dev/vdb1", "btrfs"))
+        );
+        assert_eq!(shown(&host, "/elsewhere"), None);
     }
 
     #[test]
@@ -325,7 +373,7 @@ mod tests {
              94 93 0:44 / /cow rw shared:5 - tmpfs tmpfs rw\n\
              95 93 7:0 / /rofs ro shared:6 - squashfs /dev/loop0 ro",
         );
-        assert_eq!(backing(&live, "/"), Some(("tmpfs", "tmpfs")));
+        assert_eq!(shown(&live, "/"), Some(("tmpfs", "tmpfs")));
     }
 
     #[test]
@@ -336,9 +384,11 @@ mod tests {
              217 207 0:38 /docker/containers/f1ab/hosts /etc/hosts rw,noatime - btrfs /dev/vdb1 rw,subvol=/docker",
         );
         let root = Path::new("/");
-        assert!(overlay_backing(&container, root, |_| false).is_none());
+        let source =
+            |exists: bool| shown_mount(&container, root, |_| exists).map(|mount| mount.source);
+        assert_eq!(source(false), Some("overlay"));
         // Nor would any mount here hold them.
-        assert!(overlay_backing(&container, root, |_| true).is_none());
+        assert_eq!(source(true), Some("overlay"));
     }
 
     #[test]
@@ -350,10 +400,38 @@ mod tests {
              40 25 0:60 / /merged rw - overlay overlay rw,upperdir=/data/upper,workdir=/data/work\n\
              41 25 0:61 / /merged rw - ext4 /dev/sdd1 rw",
         );
+        // sysinfo lists a disk for each of the mounts at `/data`, which all show `/dev/sdc1`.
+        assert_eq!(shown(&mounts, "/data"), Some(("/dev/sdc1", "xfs")));
         // An overlay hidden by a later mount is not what `/merged` shows.
-        assert_eq!(backing(&mounts, "/merged"), None);
+        assert_eq!(shown(&mounts, "/merged"), Some(("/dev/sdd1", "ext4")));
         let mounts = &mounts[..4];
-        assert_eq!(backing(mounts, "/merged"), Some(("/dev/sdc1", "xfs")));
+        assert_eq!(shown(mounts, "/merged"), Some(("/dev/sdc1", "xfs")));
+    }
+
+    #[test]
+    fn takes_the_visible_mount_of_a_point_mounted_again() {
+        // `/dev/sdb1` mounted again over `/dev/sdc1`: sysinfo merges the two disks of
+        // `/dev/sdb1` into the first, so its last disk at `/data` is the hidden one.
+        let mounts = mounts(
+            "30 25 8:17 / /data rw - ext4 /dev/sdb1 rw\n\
+             31 30 8:33 / /data rw - xfs /dev/sdc1 rw\n\
+             32 31 8:17 / /data rw - ext4 /dev/sdb1 rw",
+        );
+        assert_eq!(shown(&mounts, "/data"), Some(("/dev/sdb1", "ext4")));
+    }
+
+    #[test]
+    fn takes_the_visible_mount_of_a_zfs_mount_point() {
+        // A file system hidden by a dataset, which is counted with its pool.
+        let mounts = mounts(
+            "30 25 8:17 / /rpool/data rw - ext4 /dev/sdb1 rw\n\
+             31 30 0:50 / /rpool/data rw - zfs rpool/data rw,xattr,noacl",
+        );
+        assert_eq!(shown(&mounts, "/rpool/data"), Some(("rpool/data", "zfs")));
+        // A dataset hidden by a file system, which is not counted with the pool.
+        let mut mounts = mounts;
+        mounts.reverse();
+        assert_eq!(shown(&mounts, "/rpool/data"), Some(("/dev/sdb1", "ext4")));
     }
 
     /// The system and data volumes of macOS are in one APFS container.
@@ -363,7 +441,7 @@ mod tests {
         let disks = Disks::new_with_refreshed_list_specifics(DiskRefreshKind::nothing()).unwrap();
         let id_at = |mount_point: &str| {
             let disk = disks.iter().find(|d| d.mount_point() == mount_point);
-            disk.map(id)
+            disk.map(|disk| mounted(disk).0)
         };
         if let (Some(system), Some(data)) = (id_at("/"), id_at("/System/Volumes/Data")) {
             assert_eq!(system, data);

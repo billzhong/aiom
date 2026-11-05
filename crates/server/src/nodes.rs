@@ -77,6 +77,14 @@ impl Claim {
             }
         }
     }
+
+    /// Sets the country of the node, found after its latest report. Does nothing before the
+    /// node first reported.
+    pub(crate) fn set_geoip(&self, geoip: String) {
+        if let Some(node) = self.nodes.lock().nodes.get_mut(&self.name) {
+            node.geoip = geoip;
+        }
+    }
 }
 
 impl Drop for Claim {
@@ -147,5 +155,18 @@ mod tests {
 
         claim.update(4, Host::default(), stats(1.0), Some(String::new()));
         assert_eq!(nodes.list()[0].geoip, "");
+    }
+
+    #[test]
+    fn country_found_later_updates_the_latest_report() {
+        let nodes = Arc::new(Nodes::default());
+        let claim = nodes.claim("web").unwrap();
+        claim.set_geoip("NL".into());
+        assert!(nodes.list().is_empty());
+
+        claim.update(1, Host::default(), stats(1.0), None);
+        claim.set_geoip("NL".into());
+        let list = nodes.list();
+        assert_eq!((list[0].timestamp, list[0].geoip.as_str()), (1, "NL"));
     }
 }

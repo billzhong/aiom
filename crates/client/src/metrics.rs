@@ -54,8 +54,7 @@ pub(crate) fn proc_process_count() -> u64 {
 pub(crate) struct DiskSpace<'a> {
     /// The storage behind the mount, see [`crate::storage::identify`].
     pub(crate) storage: &'a OsStr,
-    /// The device of the file system at the mount point, if known, see
-    /// [`crate::storage::device`].
+    /// The device of the file system at the mount point, if known.
     pub(crate) device: Option<u64>,
     /// File system type of the storage, such as `ext4`.
     pub(crate) file_system: &'a OsStr,
@@ -73,8 +72,10 @@ pub(crate) fn disk_usage<'a>(disks: impl IntoIterator<Item = DiskSpace<'a>>) -> 
     for disk in disks {
         // The same storage can be mounted several times: bind mounts, btrfs subvolumes and
         // overlays of containers on Linux, several paths of one Windows volume, or the volumes
-        // of one APFS container on macOS. These share storage and size. Either key tells,
-        // and both are recorded: btrfs subvolumes and overlays have devices of their own.
+        // of one APFS container on macOS. These share storage and size. So do the disks at one
+        // mount point, which all show the visible one. A file system mounted under two names,
+        // such as `/dev/root` and its device, shares the device instead. Either key tells, and
+        // both are recorded: btrfs subvolumes and overlays have devices of their own.
         let new_storage = seen.insert((disk.storage, disk.total));
         let new_device = disk
             .device
@@ -104,7 +105,8 @@ pub(crate) fn disk_usage<'a>(disks: impl IntoIterator<Item = DiskSpace<'a>>) -> 
 }
 
 /// Interface name prefixes of loopback, tunnel, bridge and container interfaces, whose
-/// traffic is either local or already counted on a physical interface.
+/// traffic is either local or already counted on a physical interface, and whose addresses
+/// are not the host's.
 const VIRTUAL_INTERFACE_PREFIXES: &[&str] = &[
     "lo",
     "tun",
@@ -113,7 +115,6 @@ const VIRTUAL_INTERFACE_PREFIXES: &[&str] = &[
     "docker",
     "veth",
     "br-",
-    "vmbr",
     "vnet",
     "kube",
     "tailscale",
@@ -121,8 +122,19 @@ const VIRTUAL_INTERFACE_PREFIXES: &[&str] = &[
     "tap",
 ];
 
+/// Name prefixes of virtual bridges that the host's own address is put on, such as `vmbr0`
+/// of Proxmox. Their traffic is not counted either: the interfaces below carry it, or it
+/// stays within the host.
+const HOST_BRIDGE_PREFIXES: &[&str] = &["vmbr"];
+
 pub(crate) fn is_virtual_interface(name: &OsStr) -> bool {
-    has_prefix(name, VIRTUAL_INTERFACE_PREFIXES)
+    has_prefix(name, VIRTUAL_INTERFACE_PREFIXES) || has_prefix(name, HOST_BRIDGE_PREFIXES)
+}
+
+/// Whether the addresses of an interface are the host's: not those of loopback, tunnel and
+/// container interfaces, but those of the bridges the host's address is put on.
+pub(crate) fn has_host_addresses(name: &OsStr) -> bool {
+    !has_prefix(name, VIRTUAL_INTERFACE_PREFIXES)
 }
 
 fn has_prefix(name: &OsStr, prefixes: &[&str]) -> bool {
@@ -283,14 +295,6 @@ mod tests {
 
     #[test]
     fn counts_each_file_system_once() {
-        // A mount hidden by a later one at its point reports the space of that one.
-        let stacked = [
-            on(0x700, disk("/dev/loop0", "ext4", 284, 84)),
-            on(0x700, disk("/dev/loop2", "ext4", 284, 84)),
-            on(0x700, disk("/dev/loop0", "ext4", 284, 84)),
-        ];
-        assert_eq!(disk_usage(stacked), (284, 200));
-
         // The root as mounted by the kernel, and again under the name of its device.
         let aliases = [
             on(0x801, disk("/dev/root", "ext4", 100, 30)),
@@ -310,6 +314,21 @@ mod tests {
             on(0x811, disk("/dev/sdb1", "ext4", 100, 30)),
         ];
         assert_eq!(disk_usage(distinct), (200, 140));
+    }
+
+    #[test]
+    fn counts_the_datasets_of_a_pool_by_device_too() {
+        let disks = [
+            on(0x801, disk("/dev/root", "ext4", 100, 30)),
+            on(0x2a, disk("rpool/ROOT/pve-1", "zfs", 503, 500)),
+            // A file system hidden by a dataset at its mount point shows the dataset.
+            on(0x2b, disk("rpool/data", "zfs", 510, 500)),
+            on(0x2b, disk("rpool/data", "zfs", 510, 500)),
+            // Datasets of the same size are distinct file systems.
+            on(0x2c, disk("rpool/vm-100", "zfs", 503, 500)),
+            on(0x801, disk("/dev/sda1", "ext4", 100, 30)),
+        ];
+        assert_eq!(disk_usage(disks), (3 + 10 + 3 + 500 + 100, 3 + 10 + 3 + 70));
     }
 
     #[test]
@@ -365,6 +384,25 @@ mod tests {
         }
         for name in ["eth0", "ens3", "enp0s31f6", "wlan0", "en0", "bond0"] {
             assert!(!is_virtual_interface(OsStr::new(name)), "{name}");
+        }
+    }
+
+    #[test]
+    fn takes_the_addresses_of_host_bridges() {
+        // Proxmox puts the host's address on a bridge, `br0` elsewhere on Linux.
+        for name in ["eth0", "en0", "bond0", "vmbr0", "vmbr1", "br0", "bridge0"] {
+            assert!(has_host_addresses(OsStr::new(name)), "{name}");
+        }
+        for name in [
+            "lo",
+            "docker0",
+            "br-abc",
+            "wg0",
+            "tailscale0",
+            "tap100i0",
+            "fwbr100i0",
+        ] {
+            assert!(!has_host_addresses(OsStr::new(name)), "{name}");
         }
     }
 
