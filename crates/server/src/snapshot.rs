@@ -2,9 +2,10 @@
 
 use aiom_protocol::encode;
 use bytes::Bytes;
-use std::sync::{Mutex, PoisonError};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use crate::lock;
 use crate::nodes::Nodes;
 
 /// Caches the encoded node list for a short time, so the encoding work does not grow with the
@@ -32,26 +33,21 @@ impl SnapshotCache {
     /// Returns the gzip-compressed JSON list of all nodes in natural name order.
     pub(crate) fn get(&self, nodes: &Nodes) -> Option<Bytes> {
         // Holding the lock while building makes concurrent requests share one build.
-        let mut latest = self.latest.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut latest = lock(&self.latest);
         if let Some(cached) = latest.as_ref()
             && cached.built.elapsed() < self.ttl
         {
             return Some(cached.payload.clone());
         }
-        match encode(&nodes.list()) {
-            Ok(payload) => {
-                let payload = Bytes::from(payload);
-                *latest = Some(Cached {
-                    built: Instant::now(),
-                    payload: payload.clone(),
-                });
-                Some(payload)
-            }
-            Err(e) => {
-                tracing::error!("failed to encode node list: {e}");
-                None
-            }
-        }
+        let payload = encode(&nodes.list())
+            .inspect_err(|e| tracing::error!("failed to encode node list: {e}"))
+            .ok()?;
+        let payload = Bytes::from(payload);
+        *latest = Some(Cached {
+            built: Instant::now(),
+            payload: payload.clone(),
+        });
+        Some(payload)
     }
 }
 

@@ -74,4 +74,5 @@ export interface ChartPoint {
   udp: number
 }
 
-export type Charts = Record<string, ChartPoint[]>
+/** The history of every node, by name. */
+export type Charts = ReadonlyMap<string, ChartPoint[]>

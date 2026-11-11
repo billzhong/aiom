@@ -30,6 +30,19 @@ const NodeCharts = lazy(async () => ({
   default: (await import("@/components/node-charts")).NodeCharts,
 }))
 
+// Elements that never change are created once, so re-rendering a row skips them.
+const OS_ICON = <MonitorCog aria-hidden />
+const CPU_ICON = <Cpu aria-hidden />
+const RAM_ICON = <MemoryStick aria-hidden />
+const DISK_ICON = <HardDrive aria-hidden />
+const LOAD_ICON = <Activity aria-hidden />
+const NETWORK_ICON = <Network aria-hidden />
+const SEPARATOR = (
+  <div className="hidden items-center xl:flex">
+    <Separator orientation="vertical" />
+  </div>
+)
+
 /** Holds the charts' place while their code loads, so the opening row does not jump. */
 function ChartsFallback() {
   return (
@@ -142,40 +155,30 @@ export const NodeItem = memo(function NodeItem({
               </span>
             </CardDescription>
           </CardHeader>
-          <div className="hidden items-center xl:flex">
-            <Separator orientation="vertical" />
-          </div>
+          {SEPARATOR}
           {/* Offline nodes keep showing their last sample, which is no longer live. */}
           <CardContent className={cn("w-full flex-1 px-4 pl-2", !online && "opacity-50")}>
             <div className="flex flex-wrap gap-4">
               <div className="min-w-25 flex-[0.5] space-y-1">
-                <MetricLabel icon={<MonitorCog className="size-3.5" aria-hidden />}>
-                  {t("os")}
-                </MetricLabel>
+                <MetricLabel icon={OS_ICON}>{t("os")}</MetricLabel>
                 <div className="flex items-center gap-1 text-xs">
                   <OsLogo os={host.os} />
                   <span className="truncate">{host.os}</span>
                 </div>
               </div>
+              <UsageBar icon={CPU_ICON} label={t("cpu")} percent={stats.cpu_usage} />
               <UsageBar
-                icon={<Cpu className="size-3.5" aria-hidden />}
-                label={t("cpu")}
-                percent={stats.cpu_usage}
-              />
-              <UsageBar
-                icon={<MemoryStick className="size-3.5" aria-hidden />}
+                icon={RAM_ICON}
                 label={t("ram")}
                 percent={percentOf(stats.used_memory, host.total_memory)}
               />
               <UsageBar
-                icon={<HardDrive className="size-3.5" aria-hidden />}
+                icon={DISK_ICON}
                 label={t("disk")}
                 percent={percentOf(stats.used_disk, host.total_disk)}
               />
               <div className="min-w-30 flex-[0.5] space-y-1">
-                <MetricLabel icon={<Activity className="size-3.5" aria-hidden />}>
-                  {t("loadavg")}
-                </MetricLabel>
+                <MetricLabel icon={LOAD_ICON}>{t("loadavg")}</MetricLabel>
                 <div className="text-xs">
                   {isWindows(host.os)
                     ? t("not-available")
@@ -185,9 +188,7 @@ export const NodeItem = memo(function NodeItem({
                 </div>
               </div>
               <div className="min-w-50 flex-1 space-y-1">
-                <MetricLabel icon={<Network className="size-3.5" aria-hidden />}>
-                  {t("network")}
-                </MetricLabel>
+                <MetricLabel icon={NETWORK_ICON}>{t("network")}</MetricLabel>
                 <div className="flex gap-2 text-xs font-medium">
                   <span className="flex items-center gap-0.5">
                     <ArrowUp className="size-3" aria-label={t("upload")} />

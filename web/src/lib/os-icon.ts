@@ -73,9 +73,9 @@ export function osIcon(os: string): OsIcon {
 
   const name = normalize(os)
 
-  const firstWord = name.split(/[\s/]/)[0] ?? ""
-  const logo = [ALIASES[name], name, ALIASES[firstWord], firstWord].find(
-    (candidate) => candidate !== undefined && FONT_LOGOS.has(candidate),
+  const firstWord = name.split(/[\s/]/)[0]
+  const logo = [ALIASES[name], name, ALIASES[firstWord], firstWord].find((candidate) =>
+    FONT_LOGOS.has(candidate),
   )
   return { kind: "font", className: `fl-${logo ?? "tux"}` }
 }

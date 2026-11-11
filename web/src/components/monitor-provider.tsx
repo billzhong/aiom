@@ -26,7 +26,7 @@ interface Snapshot {
 
 export function MonitorProvider({ children }: { children: ReactNode }) {
   const { i18n } = useTranslation()
-  const [snapshot, setSnapshot] = useState<Snapshot>({ nodes: [], charts: Object.create(null) })
+  const [snapshot, setSnapshot] = useState<Snapshot>({ nodes: [], charts: new Map() })
   const [status, setStatus] = useState<Status>("all")
   const [location, setLocation] = useState(ALL_LOCATIONS)
   const [query, setQuery] = useState("")

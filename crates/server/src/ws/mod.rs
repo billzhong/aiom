@@ -12,9 +12,6 @@ use crate::AppState;
 pub(crate) mod agent;
 pub(crate) mod dashboard;
 
-/// How long closing waits for the peer to complete the closing handshake.
-const CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
-
 /// How open WebSockets are kept in check.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Keepalive {
@@ -26,6 +23,8 @@ pub(crate) struct Keepalive {
     pub(crate) ping_interval: Duration,
     /// How long a connection may stay silent, pongs included, before it is dropped.
     pub(crate) idle_timeout: Duration,
+    /// How long closing waits for the peer to complete the closing handshake.
+    pub(crate) close_timeout: Duration,
 }
 
 impl Default for Keepalive {
@@ -33,6 +32,7 @@ impl Default for Keepalive {
         Self {
             ping_interval: Duration::from_secs(5),
             idle_timeout: Duration::from_secs(20),
+            close_timeout: Duration::from_secs(1),
         }
     }
 }
@@ -52,6 +52,7 @@ pub(crate) struct Connection {
     shutdown: watch::Receiver<bool>,
     ping: Interval,
     idle_timeout: Duration,
+    close_timeout: Duration,
 }
 
 impl Connection {
@@ -59,6 +60,7 @@ impl Connection {
         let Keepalive {
             ping_interval,
             idle_timeout,
+            close_timeout,
         } = state.keepalive;
         let mut ping = tokio::time::interval_at(Instant::now() + ping_interval, ping_interval);
         ping.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -67,6 +69,7 @@ impl Connection {
             shutdown: state.shutdown.subscribe(),
             ping,
             idle_timeout,
+            close_timeout,
         }
     }
 
@@ -147,9 +150,9 @@ impl Connection {
 
     /// Completes the closing handshake: sends the reply to the close frame of the peer, which
     /// the socket sends on its next use, or waits for the reply to ours. Gives up on a peer that
-    /// does not answer within [`CLOSE_TIMEOUT`].
+    /// does not answer within the close timeout.
     async fn finish_close(&mut self) {
-        let _ = timeout(CLOSE_TIMEOUT, async {
+        let _ = timeout(self.close_timeout, async {
             while let Some(Ok(_)) = self.socket.recv().await {}
         })
         .await;

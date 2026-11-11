@@ -35,7 +35,7 @@ export function NodeList() {
           key={node.name}
           node={node}
           online={isOnline(node.timestamp, now)}
-          history={charts[node.name] ?? NO_HISTORY}
+          history={charts.get(node.name) ?? NO_HISTORY}
           open={expanded === node.name}
           onToggle={toggle}
         />

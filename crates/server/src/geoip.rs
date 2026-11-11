@@ -6,9 +6,11 @@ use reqwest::StatusCode;
 use reqwest::redirect::Policy;
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::OnceCell;
+
+use crate::lock;
 
 const IPINFO_URL: &str = "https://ipinfo.io";
 const GEOJS_URL: &str = "https://get.geojs.io";
@@ -206,11 +208,6 @@ impl GeoIp {
     }
 }
 
-/// Locks `mutex`, whose data no panic leaves inconsistent.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
 impl Resolver {
     /// Returns the cached lookup of `ip`, starting a new one when there is none or it expired.
     fn cached(&self, ip: IpAddr, now: Instant) -> Arc<Lookup> {
@@ -376,12 +373,23 @@ mod tests {
         (serve(app).await, hits)
     }
 
-    /// A resolver asking the fake ipinfo.io first, then the fake GeoJS.
-    async fn fakes_with_fallback() -> (GeoIp, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+    /// Reads the request counters of a first service and its fallback.
+    fn hits_of(first: Arc<AtomicUsize>, fallback: Arc<AtomicUsize>) -> impl Fn() -> (usize, usize) {
+        move || {
+            (
+                first.load(Ordering::SeqCst),
+                fallback.load(Ordering::SeqCst),
+            )
+        }
+    }
+
+    /// A resolver asking the fake ipinfo.io first, then the fake GeoJS, and how often each
+    /// was asked.
+    async fn fakes_with_fallback() -> (GeoIp, impl Fn() -> (usize, usize)) {
         let (ipinfo, ipinfo_hits) = fake_ipinfo().await;
         let (geojs, geojs_hits) = fake_geojs().await;
         let geoip = GeoIp::with_fallback(&ipinfo, &geojs).unwrap();
-        (geoip, ipinfo_hits, geojs_hits)
+        (geoip, hits_of(ipinfo_hits, geojs_hits))
     }
 
     #[tokio::test]
@@ -403,30 +411,28 @@ mod tests {
 
     #[tokio::test]
     async fn falls_back_when_ipinfo_fails() {
-        let (geoip, ipinfo_hits, geojs_hits) = fakes_with_fallback().await;
+        let (geoip, hits) = fakes_with_fallback().await;
 
         // ipinfo.io answers, so GeoJS is not asked.
         assert_eq!(
             geoip.country_code(ip("8.8.8.8")).await.as_deref(),
             Some("US")
         );
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 0);
+        assert_eq!(hits(), (1, 0));
 
         // ipinfo.io rate limits this address, so GeoJS answers.
         assert_eq!(
             geoip.country_code(ip("1.1.1.1")).await.as_deref(),
             Some("AU")
         );
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(hits(), (2, 1));
 
         // The answer from the fallback is cached like any other.
         assert_eq!(
             geoip.country_code(ip("1.1.1.1")).await.as_deref(),
             Some("AU")
         );
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(hits(), (2, 1));
     }
 
     #[tokio::test]
@@ -444,25 +450,24 @@ mod tests {
         let (down, down_hits) = fake_down().await;
         let (geojs, geojs_hits) = fake_geojs().await;
         let geoip = GeoIp::with_fallback(&down, &geojs).unwrap();
+        let hits = hits_of(down_hits, geojs_hits);
         let (address, now) = (ip("8.8.8.8"), Instant::now());
         assert_eq!(geoip.country_code_at(address, now).await, None);
         assert_eq!(geoip.country_code_at(address, now).await, None);
         // Each service was asked once; the failure is cached until it is retried.
-        assert_eq!(down_hits.load(Ordering::SeqCst), 1);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(hits(), (1, 1));
 
         // A service that is down is asked again with the next lookup.
         assert_eq!(
             geoip.country_code_at(address, now + RETRY_AFTER).await,
             None
         );
-        assert_eq!(down_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(hits(), (2, 2));
     }
 
     #[tokio::test]
     async fn keeps_answers_without_a_country_for_long() {
-        let (geoip, ipinfo_hits, geojs_hits) = fakes_with_fallback().await;
+        let (geoip, hits) = fakes_with_fallback().await;
         let (address, now) = (ip("192.0.2.1"), Instant::now());
         // Neither service places this address, which is no failure to retry soon.
         assert_eq!(geoip.country_code_at(address, now).await, None);
@@ -470,35 +475,31 @@ mod tests {
             geoip.country_code_at(address, now + RETRY_AFTER).await,
             None
         );
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 1);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(hits(), (1, 1));
 
         assert_eq!(geoip.country_code_at(address, now + FOUND_TTL).await, None);
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(hits(), (2, 2));
     }
 
     #[tokio::test]
     async fn pauses_a_service_that_rate_limits() {
-        let (geoip, ipinfo_hits, geojs_hits) = fakes_with_fallback().await;
+        let (geoip, hits) = fakes_with_fallback().await;
         let now = Instant::now();
         // ipinfo.io rate limits this address, so GeoJS answers.
         let rate_limited = geoip.country_code_at(ip("1.1.1.1"), now).await;
         assert_eq!(rate_limited.as_deref(), Some("AU"));
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(hits(), (1, 1));
 
         // For a while, only GeoJS is asked, which cannot place this one. Not having asked
         // ipinfo.io, the lookup failed, and is retried soon.
         let address = ip("8.8.8.8");
         assert_eq!(geoip.country_code_at(address, now).await, None);
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 1);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(hits(), (1, 2));
 
         let later = now + RETRY_AFTER;
         let retried = geoip.country_code_at(address, later).await;
         assert_eq!(retried.as_deref(), Some("US"));
-        assert_eq!(ipinfo_hits.load(Ordering::SeqCst), 2);
-        assert_eq!(geojs_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(hits(), (2, 2));
     }
 
     #[tokio::test]
@@ -578,7 +579,7 @@ mod tests {
             let lookup = resolver.cached(IpAddr::V4(Ipv4Addr::from(next)), at);
             lookup.country.set(outcome).unwrap();
         };
-        let size = || resolver.cache.lock().unwrap().lookups.len();
+        let size = || lock(&resolver.cache).lookups.len();
 
         for _ in 0..PRUNE_ABOVE {
             add(now, Outcome::Failed);

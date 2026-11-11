@@ -21,12 +21,12 @@ const mystery = () => makeNode({ name: "mystery", geoip: "" })
 
 function renderApp() {
   const user = userEvent.setup()
-  render(
+  const view = render(
     <ThemeProvider>
       <App />
     </ThemeProvider>,
   )
-  return { user }
+  return { user, ...view }
 }
 
 /** Sends `nodes` as the server would, opening the connection first if needed. */
@@ -282,11 +282,7 @@ describe("App", () => {
   })
 
   it("closes the connection when unmounted", () => {
-    const { unmount } = render(
-      <ThemeProvider>
-        <App />
-      </ThemeProvider>,
-    )
+    const { unmount } = renderApp()
     const socket = FakeWebSocket.latest()
     act(() => socket.open())
     unmount()

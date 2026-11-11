@@ -85,7 +85,7 @@ export class MonitorSocket {
     const socket = this.socket
     this.socket = null
     if (socket) {
-      socket.onopen = socket.onmessage = socket.onclose = socket.onerror = null
+      socket.onopen = socket.onmessage = socket.onclose = null
       socket.close()
     }
   }

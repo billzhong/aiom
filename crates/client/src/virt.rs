@@ -455,14 +455,9 @@ fn detect_vm_cpuid() -> Option<&'static str> {
     // SAFETY: as above.
     let leaf = unsafe { __cpuid(0x4000_0000) };
     let mut signature = [0; 12];
-    for (chunk, register) in signature
-        .as_chunks_mut::<4>()
-        .0
-        .iter_mut()
-        .zip([leaf.ebx, leaf.ecx, leaf.edx])
-    {
-        *chunk = register.to_le_bytes();
-    }
+    signature[..4].copy_from_slice(&leaf.ebx.to_le_bytes());
+    signature[4..8].copy_from_slice(&leaf.ecx.to_le_bytes());
+    signature[8..].copy_from_slice(&leaf.edx.to_le_bytes());
     Some(hypervisor_from_signature(&signature))
 }
 
@@ -496,7 +491,7 @@ mod tests {
         }
 
         fn file(self, path: &str, content: impl AsRef<[u8]>) -> Self {
-            let path = self.probe.root.join(path.trim_start_matches('/'));
+            let path = self.probe.path(path);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, content).unwrap();
             self

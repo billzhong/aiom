@@ -47,6 +47,8 @@ fn app(args: &[&str], geoip: GeoIp) -> App {
     App::new(&config(args), geoip)
         .unwrap()
         .with_snapshot_ttl(Duration::ZERO)
+        // Test clients that are not reading never answer a close frame.
+        .with_close_timeout(Duration::from_millis(100))
 }
 
 impl TestServer {
@@ -81,10 +83,11 @@ impl TestServer {
     }
 
     async fn agent_with(&self, headers: &[(&str, &str)]) -> Socket {
-        self.agent_at("/agent", Some(TOKEN), headers).await.unwrap()
+        self.connect("/agent", Some(TOKEN), headers).await.unwrap()
     }
 
-    async fn agent_at(
+    /// Opens a WebSocket to the route at `path`, with the bearer `token` if any.
+    async fn connect(
         &self,
         path: &str,
         token: Option<&str>,
@@ -124,14 +127,7 @@ impl TestServer {
     }
 
     async fn dashboard(&self) -> Socket {
-        self.dashboard_at("/ws").await
-    }
-
-    async fn dashboard_at(&self, path: &str) -> Socket {
-        connect_async(format!("ws://{}{path}", self.addr))
-            .await
-            .unwrap()
-            .0
+        self.connect("/ws", None, &[]).await.unwrap()
     }
 
     async fn stop(self) {
@@ -209,6 +205,14 @@ async fn poll_until(
     }
 }
 
+/// Polls until the first node is located in `country`.
+async fn wait_for_country(dashboard: &mut Socket, country: &str) -> Vec<NodeSnapshot> {
+    poll_until(dashboard, |nodes| {
+        nodes.first().is_some_and(|n| n.geoip == country)
+    })
+    .await
+}
+
 /// Whether the server keeps `agent` connected after its first report: rejected agents are
 /// closed right away.
 async fn is_accepted(agent: &mut Socket) -> bool {
@@ -262,7 +266,7 @@ async fn health_check_and_unknown_routes() {
 async fn agent_route_requires_token() {
     let server = TestServer::default().await;
     for token in [None, Some("wrong-token")] {
-        match server.agent_at("/agent", token, &[]).await {
+        match server.connect("/agent", token, &[]).await {
             Err(tungstenite::Error::Http(response)) => assert_eq!(response.status(), 401),
             other => panic!("expected 401 for {token:?}, got {other:?}"),
         }
@@ -408,13 +412,10 @@ async fn refuses_names_the_client_does_not_send() {
 async fn accepts_dashboards_served_from_other_origins() {
     let server = TestServer::default().await;
     // Browsers send the origin of the page, but WebSockets are not subject to CORS.
-    let mut request = format!("ws://{}/ws", server.addr)
-        .into_client_request()
+    let mut dashboard = server
+        .connect("/ws", None, &[("Origin", "https://dashboard.example")])
+        .await
         .unwrap();
-    request
-        .headers_mut()
-        .insert("Origin", "https://dashboard.example".parse().unwrap());
-    let (mut dashboard, _) = connect_async(request).await.unwrap();
     assert!(poll(&mut dashboard).await.is_empty());
     server.stop().await;
 }
@@ -443,9 +444,9 @@ async fn serves_custom_routes() {
         GeoIp::disabled(),
     )
     .await;
-    let mut agent = server.agent_at("/*report", Some(TOKEN), &[]).await.unwrap();
+    let mut agent = server.connect("/*report", Some(TOKEN), &[]).await.unwrap();
     send_report(&mut agent, &report("custom", "")).await;
-    let mut dashboard = server.dashboard_at("/:live").await;
+    let mut dashboard = server.connect("/:live", None, &[]).await.unwrap();
     poll_until(&mut dashboard, |nodes| !nodes.is_empty()).await;
 
     for path in ["/ws", "/live", "/report"] {
@@ -557,16 +558,10 @@ async fn geolocates_each_address_once() {
     for _ in 0..3 {
         send_report(&mut agent, &report("tokyo", "192.0.2.1")).await;
     }
-    poll_until(&mut dashboard, |nodes| {
-        nodes.first().is_some_and(|n| n.geoip == "JP")
-    })
-    .await;
+    wait_for_country(&mut dashboard, "JP").await;
 
     send_report(&mut agent, &report("tokyo", "198.51.100.1")).await;
-    poll_until(&mut dashboard, |nodes| {
-        nodes.first().is_some_and(|n| n.geoip == "US")
-    })
-    .await;
+    wait_for_country(&mut dashboard, "US").await;
     assert_eq!(lookups.load(Ordering::SeqCst), 2);
 
     // Without any public address, the country stays as it was.
@@ -597,10 +592,7 @@ async fn geolocates_the_address_a_client_connects_from() {
         .await;
     send_report(&mut agent, &report("proxied", "")).await;
     let mut dashboard = server.dashboard().await;
-    poll_until(&mut dashboard, |nodes| {
-        nodes.first().is_some_and(|n| n.geoip == "DE")
-    })
-    .await;
+    wait_for_country(&mut dashboard, "DE").await;
 
     // It takes precedence over an address the client reports.
     let mut reported = report("proxied", "192.0.2.1");
@@ -637,7 +629,7 @@ async fn stores_reports_while_geolocating() {
 
     // Its country is filled in once found, without another report.
     answer.notify_one();
-    poll_until(&mut dashboard, |nodes| nodes[0].geoip == "JP").await;
+    wait_for_country(&mut dashboard, "JP").await;
     server.stop().await;
 }
 
@@ -648,10 +640,7 @@ async fn keeps_the_country_of_a_node_at_an_address_not_found() {
     let mut agent = server.agent().await;
     let mut dashboard = server.dashboard().await;
     send_report(&mut agent, &report("tokyo", "192.0.2.1")).await;
-    poll_until(&mut dashboard, |nodes| {
-        nodes.first().is_some_and(|n| n.geoip == "JP")
-    })
-    .await;
+    wait_for_country(&mut dashboard, "JP").await;
 
     // The fake service cannot place this address.
     let mut moved = report("tokyo", "198.51.100.2");

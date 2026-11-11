@@ -77,7 +77,6 @@ export class FakeWebSocket {
   onopen: ((event: Event) => void) | null = null
   onmessage: ((event: MessageEvent) => unknown) | null = null
   onclose: ((event: CloseEvent) => void) | null = null
-  onerror: ((event: Event) => void) | null = null
 
   readonly url: string
 

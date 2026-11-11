@@ -40,17 +40,15 @@ function ChartTooltipRow({ name, value }: { name: string; value: string }) {
   )
 }
 
-function PercentAxis() {
-  return (
-    <YAxis
-      tickLine={false}
-      axisLine={false}
-      tickMargin={10}
-      domain={[0, 100]}
-      tickFormatter={(value) => `${value}%`}
-    />
-  )
-}
+const percentAxis = (
+  <YAxis
+    tickLine={false}
+    axisLine={false}
+    tickMargin={10}
+    domain={[0, 100]}
+    tickFormatter={(value) => `${value}%`}
+  />
+)
 
 function lines(keys: readonly (keyof ChartPoint)[]) {
   return keys.map((key) => (
@@ -105,7 +103,7 @@ export const NodeCharts = memo(function NodeCharts({ history }: { history: Chart
         <LineChart accessibilityLayer data={history} margin={{ left: -10, right: 10 }}>
           <CartesianGrid vertical={false} />
           {timeAxis}
-          {PercentAxis()}
+          {percentAxis}
           {percentTooltip}
           {lines(["cpu"])}
         </LineChart>
@@ -120,7 +118,7 @@ export const NodeCharts = memo(function NodeCharts({ history }: { history: Chart
         <AreaChart accessibilityLayer data={history} margin={{ left: -10, right: 10 }}>
           <CartesianGrid vertical={false} />
           {timeAxis}
-          {PercentAxis()}
+          {percentAxis}
           {percentTooltip}
           {(["ram", "swap"] as const).map((key) => (
             <Area
@@ -151,7 +149,7 @@ export const NodeCharts = memo(function NodeCharts({ history }: { history: Chart
             axisLine={false}
             tickMargin={10}
             padding={{ top: 15 }}
-            tickFormatter={(value) => formatBitRate(value)}
+            tickFormatter={formatBitRate}
           />
           {tooltip((value) => formatBitRate(Number(value)))}
           {lines(["download", "upload"])}

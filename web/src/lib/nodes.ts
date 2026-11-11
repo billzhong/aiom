@@ -126,15 +126,15 @@ export function appendChartPoints(
   nodes: readonly NodeData[],
   maxPoints = MAX_CHART_POINTS,
 ): Charts {
-  // Node names can match Object.prototype keys, including __proto__.
-  const next: Charts = Object.create(null)
+  const next = new Map<string, ChartPoint[]>()
   for (const node of nodes) {
-    const history = Object.hasOwn(charts, node.name) ? charts[node.name] : []
-    const last = history.at(-1)
-    next[node.name] =
-      last?.timestamp === node.timestamp
+    const history = charts.get(node.name) ?? []
+    next.set(
+      node.name,
+      history.at(-1)?.timestamp === node.timestamp
         ? history
-        : [...history, chartPointOf(node)].slice(-maxPoints)
+        : [...history, chartPointOf(node)].slice(-maxPoints),
+    )
   }
   return next
 }

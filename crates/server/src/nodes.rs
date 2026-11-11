@@ -1,9 +1,10 @@
 //! The latest state of every node, kept in memory.
 
 use aiom_protocol::{Host, NodeSnapshot, Stats};
-use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex};
+
+use crate::lock;
 
 /// The latest report of every node that reported since the server started, and the names
 /// clients are reporting as right now.
@@ -20,22 +21,21 @@ struct Inner {
 }
 
 impl Nodes {
-    fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
     /// Claims `name` for one client connection, or returns `None` while another connection
     /// holds it. The name is released when the claim is dropped.
     pub(crate) fn claim(self: &Arc<Self>, name: &str) -> Option<Claim> {
-        self.lock().claimed.insert(name.to_owned()).then(|| Claim {
-            nodes: Arc::clone(self),
-            name: name.to_owned(),
-        })
+        lock(&self.inner)
+            .claimed
+            .insert(name.to_owned())
+            .then(|| Claim {
+                nodes: Arc::clone(self),
+                name: name.to_owned(),
+            })
     }
 
     /// All nodes in natural name order.
     pub(crate) fn list(&self) -> Vec<NodeSnapshot> {
-        let mut nodes: Vec<_> = self.lock().nodes.values().cloned().collect();
+        let mut nodes: Vec<_> = lock(&self.inner).nodes.values().cloned().collect();
         nodes.sort_by(|a, b| natord::compare(&a.name, &b.name));
         nodes
     }
@@ -56,32 +56,30 @@ impl Claim {
     /// Stores the latest report of the node. A `geoip` of `None` keeps the country known
     /// before.
     pub(crate) fn update(&self, timestamp: i64, host: Host, stats: Stats, geoip: Option<String>) {
-        match self.nodes.lock().nodes.entry(self.name.clone()) {
-            Entry::Occupied(mut entry) => {
-                let node = entry.get_mut();
-                node.timestamp = timestamp;
-                node.host = host;
-                node.stats = stats;
-                if let Some(geoip) = geoip {
-                    node.geoip = geoip;
-                }
+        let mut inner = lock(&self.nodes.inner);
+        if let Some(node) = inner.nodes.get_mut(&self.name) {
+            node.timestamp = timestamp;
+            node.host = host;
+            node.stats = stats;
+            if let Some(geoip) = geoip {
+                node.geoip = geoip;
             }
-            Entry::Vacant(entry) => {
-                entry.insert(NodeSnapshot {
-                    timestamp,
-                    name: self.name.clone(),
-                    host,
-                    stats,
-                    geoip: geoip.unwrap_or_default(),
-                });
-            }
+            return;
         }
+        let node = NodeSnapshot {
+            timestamp,
+            name: self.name.clone(),
+            host,
+            stats,
+            geoip: geoip.unwrap_or_default(),
+        };
+        inner.nodes.insert(self.name.clone(), node);
     }
 
     /// Sets the country of the node, found after its latest report. Does nothing before the
     /// node first reported.
     pub(crate) fn set_geoip(&self, geoip: String) {
-        if let Some(node) = self.nodes.lock().nodes.get_mut(&self.name) {
+        if let Some(node) = lock(&self.nodes.inner).nodes.get_mut(&self.name) {
             node.geoip = geoip;
         }
     }
@@ -89,7 +87,7 @@ impl Claim {
 
 impl Drop for Claim {
     fn drop(&mut self) {
-        self.nodes.lock().claimed.remove(&self.name);
+        lock(&self.nodes.inner).claimed.remove(&self.name);
     }
 }
 

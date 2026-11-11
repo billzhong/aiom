@@ -24,7 +24,8 @@ pub const PROTOCOL_VERSION: u64 = 1;
 /// Text frame the dashboard sends to request a fresh list of [`NodeSnapshot`]s.
 pub const DASHBOARD_PING: &str = "ping";
 
-/// Static facts about a host, gathered once when the client starts.
+/// Facts about a host that rarely change. The client gathers them when it starts, and
+/// refreshes the total memory, swap and disk space with every sample.
 ///
 /// Missing fields deserialize to their defaults so that clients and servers of slightly
 /// different versions stay compatible.

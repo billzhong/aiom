@@ -12,7 +12,7 @@ function levelClass(percent: number) {
 /** The icon and name of a metric, above its value. */
 export function MetricLabel({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
-    <span className="flex items-center gap-1 text-sm text-muted-foreground">
+    <span className="flex items-center gap-1 text-sm text-muted-foreground [&>svg]:size-3.5">
       {icon} {children}
     </span>
   )

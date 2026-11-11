@@ -35,7 +35,7 @@ impl Running {
     }
 }
 
-async fn start_server(listener: TcpListener) -> Running {
+fn start_server(listener: TcpListener) -> Running {
     let config = aiom_server::Config::try_parse_from(["aiom-server", "--token", TOKEN]).unwrap();
     let app = App::new(&config, GeoIp::disabled())
         .unwrap()
@@ -102,7 +102,7 @@ async fn wait_for_node(addr: SocketAddr, name: &str) -> NodeSnapshot {
 async fn client_reports_show_up_on_the_dashboard() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = start_server(listener).await;
+    let server = start_server(listener);
     let client = start_client("e2e-node", addr, TOKEN);
 
     let node = wait_for_node(addr, "e2e-node").await;
@@ -127,7 +127,7 @@ async fn client_reports_show_up_on_the_dashboard() {
 async fn client_with_wrong_token_is_ignored() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = start_server(listener).await;
+    let server = start_server(listener);
     let intruder = start_client("intruder", addr, "wrong-token");
     let legit = start_client("legit", addr, TOKEN);
 
@@ -145,13 +145,13 @@ async fn client_with_wrong_token_is_ignored() {
 async fn client_reconnects_after_server_restart() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let server = start_server(listener).await;
+    let server = start_server(listener);
     let client = start_client("phoenix", addr, TOKEN);
     wait_for_node(addr, "phoenix").await;
 
     server.stop().await;
     // The new server starts empty, so the node only reappears if the client reconnects.
-    let server = start_server(TcpListener::bind(addr).await.unwrap()).await;
+    let server = start_server(TcpListener::bind(addr).await.unwrap());
     wait_for_node(addr, "phoenix").await;
 
     client.stop().await;

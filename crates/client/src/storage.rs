@@ -2,6 +2,8 @@
 //! mounted there. Mounts that show the same storage report the same capacity, which is to be
 //! counted once.
 
+#[cfg(any(target_os = "linux", test))]
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
 #[cfg(any(target_os = "linux", test))]
@@ -39,11 +41,13 @@ pub(crate) fn identify(disks: &[Disk]) -> Vec<Storage> {
     #[cfg(target_os = "linux")]
     if needs_mount_table(disks) {
         let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
-        let mounts: Vec<_> = mountinfo.lines().filter_map(Mount::parse).collect();
+        let mounts = parse_mounts(&mountinfo);
+        let table = MountTable::new(&mounts);
         return disks
             .iter()
             .map(|disk| {
-                let names = shown_mount(&mounts, disk.mount_point(), |path| path.exists())
+                let names = table
+                    .shown(disk.mount_point(), |path| path.exists())
                     .map_or_else(
                         || mounted(disk),
                         |mount| (mount.source.into(), mount.file_system.into()),
@@ -140,6 +144,12 @@ impl<'a> Mount<'a> {
     }
 }
 
+/// Parses `/proc/self/mountinfo`, skipping lines that are not mounts.
+#[cfg(any(target_os = "linux", test))]
+fn parse_mounts(mountinfo: &str) -> Vec<Mount<'_>> {
+    mountinfo.lines().filter_map(Mount::parse).collect()
+}
+
 /// Undoes the octal escapes of the mount table, such as `\040` for a space.
 #[cfg(any(target_os = "linux", test))]
 fn unescape(field: &str) -> Option<String> {
@@ -166,36 +176,51 @@ fn unescape(field: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-/// Returns the mount whose storage `mount_point` shows, if anything is mounted there: the
-/// mount visible at the point, or, if that is an overlay, the mount holding the layer whose
-/// capacity it reports. `exists` tells whether a path exists here: an overlay mounted from
-/// another mount namespace, such as the host's when this runs in a container, names layers
-/// that do not, and the mounts holding them are not visible. Such an overlay stands for itself.
+/// The mount table in mount order, with an index of its mount points.
 #[cfg(any(target_os = "linux", test))]
-fn shown_mount<'m, 'a>(
+struct MountTable<'m, 'a> {
     mounts: &'m [Mount<'a>],
-    mount_point: &Path,
-    exists: impl Fn(&Path) -> bool,
-) -> Option<&'m Mount<'a>> {
-    // Of the mounts at one point, the last is visible.
-    let i = mounts.iter().rposition(|m| m.mount_point == mount_point)?;
-    let visible = &mounts[i];
-    if visible.file_system != "overlay" {
-        return Some(visible);
+    /// The mounts at each point in mount order, of which the last is the visible one. Looking
+    /// mounts up here keeps the work per disk from growing with the table, which is long on a
+    /// host running containers.
+    at: HashMap<&'m Path, Vec<usize>>,
+}
+
+#[cfg(any(target_os = "linux", test))]
+impl<'m, 'a> MountTable<'m, 'a> {
+    fn new(mounts: &'m [Mount<'a>]) -> Self {
+        let mut at = HashMap::<_, Vec<_>>::new();
+        for (i, mount) in mounts.iter().enumerate() {
+            at.entry(mount.mount_point.as_path()).or_default().push(i);
+        }
+        Self { mounts, at }
     }
-    let backing = visible
-        .overlay_layer()
-        .filter(|layer| exists(layer))
-        .and_then(|layer| {
-            mounts
-                .iter()
-                .enumerate()
-                .filter(|&(j, m)| j != i && layer.starts_with(&m.mount_point))
-                // The innermost; `max_by_key` takes the last of equals, the visible one.
-                .max_by_key(|(_, m)| m.mount_point.components().count())
-                .map(|(_, m)| m)
-        });
-    Some(backing.unwrap_or(visible))
+
+    /// Returns the mount whose storage `mount_point` shows, if anything is mounted there: the
+    /// mount visible at the point, or, if that is an overlay, the mount holding the layer
+    /// whose capacity it reports. `exists` tells whether a path exists here: an overlay
+    /// mounted from another mount namespace, such as the host's when this runs in a
+    /// container, names layers that do not, and the mounts holding them are not visible. Such
+    /// an overlay stands for itself.
+    fn shown(&self, mount_point: &Path, exists: impl Fn(&Path) -> bool) -> Option<&'m Mount<'a>> {
+        let &i = self.at.get(mount_point)?.last()?;
+        let visible = &self.mounts[i];
+        if visible.file_system != "overlay" {
+            return Some(visible);
+        }
+        let backing = visible
+            .overlay_layer()
+            .filter(|layer| exists(layer))
+            .and_then(|layer| {
+                // The innermost mount around the layer: the last at the nearest point that
+                // has one other than the overlay itself.
+                layer.ancestors().find_map(|point| {
+                    let at = self.at.get(point)?;
+                    at.iter().rev().copied().find(|&j| j != i)
+                })
+            });
+        Some(backing.map_or(visible, |j| &self.mounts[j]))
+    }
 }
 
 #[cfg(windows)]
@@ -310,14 +335,11 @@ mod tests {
         }
     }
 
-    fn mounts(mountinfo: &str) -> Vec<Mount<'_>> {
-        mountinfo.lines().filter_map(Mount::parse).collect()
-    }
-
     /// Returns the source and file system of the mount whose storage `mount_point` shows,
     /// with every path existing.
     fn shown<'a>(mounts: &[Mount<'a>], mount_point: &str) -> Option<(&'a str, &'a str)> {
-        shown_mount(mounts, Path::new(mount_point), |_| true)
+        MountTable::new(mounts)
+            .shown(Path::new(mount_point), |_| true)
             .map(|mount| (mount.source, mount.file_system))
     }
 
@@ -343,7 +365,7 @@ mod tests {
 
     #[test]
     fn finds_the_storage_of_container_overlays_on_the_host() {
-        let host = mounts(
+        let host = parse_mounts(
             "25 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n\
              153 25 0:38 /docker /var/lib/docker rw,noatime shared:69 - btrfs /dev/vdb1 rw,subvol=/docker\n\
              72 153 0:53 / /var/lib/docker/rootfs/overlayfs/3b2b rw,relatime shared:24 - overlay overlay rw,lowerdir=/var/lib/docker/snapshots/1/fs:/var/lib/docker/snapshots/2/fs,upperdir=/var/lib/docker/snapshots/3/fs,workdir=/var/lib/docker/snapshots/3/work\n\
@@ -368,7 +390,7 @@ mod tests {
     #[test]
     fn finds_the_upper_layer_on_a_ram_disk() {
         // A live system, whose RAM disk sysinfo does not list as a disk: the overlay stays.
-        let live = mounts(
+        let live = parse_mounts(
             "93 58 0:20 / / rw shared:4 - overlay overlay rw,lowerdir=/rofs,upperdir=/cow/upper,workdir=/cow/work\n\
              94 93 0:44 / /cow rw shared:5 - tmpfs tmpfs rw\n\
              95 93 7:0 / /rofs ro shared:6 - squashfs /dev/loop0 ro",
@@ -379,13 +401,15 @@ mod tests {
     #[test]
     fn leaves_overlays_whose_layers_are_not_here() {
         // In a container, the overlay names layers on the host.
-        let container = mounts(
+        let container = parse_mounts(
             "207 75 0:53 / / rw,relatime - overlay overlay rw,lowerdir=/var/lib/docker/snapshots/1/fs,upperdir=/var/lib/docker/snapshots/3/fs,workdir=/var/lib/docker/snapshots/3/work\n\
              217 207 0:38 /docker/containers/f1ab/hosts /etc/hosts rw,noatime - btrfs /dev/vdb1 rw,subvol=/docker",
         );
-        let root = Path::new("/");
-        let source =
-            |exists: bool| shown_mount(&container, root, |_| exists).map(|mount| mount.source);
+        let table = MountTable::new(&container);
+        let source = |exists: bool| {
+            let shown = table.shown(Path::new("/"), |_| exists);
+            shown.map(|mount| mount.source)
+        };
         assert_eq!(source(false), Some("overlay"));
         // Nor would any mount here hold them.
         assert_eq!(source(true), Some("overlay"));
@@ -393,7 +417,7 @@ mod tests {
 
     #[test]
     fn takes_the_visible_mount_of_a_point() {
-        let mounts = mounts(
+        let mounts = parse_mounts(
             "25 1 8:1 / / rw - ext4 /dev/sda1 rw\n\
              30 25 8:17 / /data rw - ext4 /dev/sdb1 rw\n\
              31 25 8:33 / /data rw - xfs /dev/sdc1 rw\n\
@@ -409,10 +433,21 @@ mod tests {
     }
 
     #[test]
+    fn finds_the_layer_in_the_mount_an_overlay_hides() {
+        // Nothing else holds the upper layer of the overlay at `/` but the file system
+        // mounted there before it.
+        let mounts = parse_mounts(
+            "25 1 8:1 / / rw - ext4 /dev/sda1 rw\n\
+             26 25 0:40 / / rw - overlay overlay rw,lowerdir=/lower,upperdir=/upper,workdir=/work",
+        );
+        assert_eq!(shown(&mounts, "/"), Some(("/dev/sda1", "ext4")));
+    }
+
+    #[test]
     fn takes_the_visible_mount_of_a_point_mounted_again() {
         // `/dev/sdb1` mounted again over `/dev/sdc1`: sysinfo merges the two disks of
         // `/dev/sdb1` into the first, so its last disk at `/data` is the hidden one.
-        let mounts = mounts(
+        let mounts = parse_mounts(
             "30 25 8:17 / /data rw - ext4 /dev/sdb1 rw\n\
              31 30 8:33 / /data rw - xfs /dev/sdc1 rw\n\
              32 31 8:17 / /data rw - ext4 /dev/sdb1 rw",
@@ -423,7 +458,7 @@ mod tests {
     #[test]
     fn takes_the_visible_mount_of_a_zfs_mount_point() {
         // A file system hidden by a dataset, which is counted with its pool.
-        let mounts = mounts(
+        let mounts = parse_mounts(
             "30 25 8:17 / /rpool/data rw - ext4 /dev/sdb1 rw\n\
              31 30 0:50 / /rpool/data rw - zfs rpool/data rw,xattr,noacl",
         );

@@ -8,6 +8,7 @@ import {
   locationsOf,
   summarize,
 } from "@/lib/nodes"
+import type { Charts } from "@/lib/types"
 import { makeNode, type NodeOverrides } from "@/test/fixtures"
 
 const NOW = 1_700_000_000_000
@@ -15,6 +16,8 @@ const online = (name: string, overrides: NodeOverrides = {}) =>
   makeNode({ name, timestamp: NOW / 1000, ...overrides })
 const offline = (name: string, overrides: NodeOverrides = {}) =>
   makeNode({ name, timestamp: NOW / 1000 - 3600, ...overrides })
+const timestampsOf = (charts: Charts, name: string) =>
+  charts.get(name)?.map((point) => point.timestamp)
 
 describe("locations", () => {
   it("counts the nodes of each location, with unknown last", () => {
@@ -161,23 +164,21 @@ describe("appendChartPoints", () => {
     "handles history updates for a node named %s",
     (name) => {
       const node = makeNode({ name, timestamp: 1 })
-      let charts = appendChartPoints({}, [node])
-      expect(Object.hasOwn(charts, name)).toBe(true)
-      expect(charts[name].map((point) => point.timestamp)).toEqual([1])
+      let charts = appendChartPoints(new Map(), [node])
+      expect(timestampsOf(charts, name)).toEqual([1])
 
-      const history = charts[name]
+      const history = charts.get(name)
       charts = appendChartPoints(charts, [node])
-      expect(charts[name]).toBe(history)
+      expect(charts.get(name)).toBe(history)
 
       charts = appendChartPoints(charts, [{ ...node, timestamp: 2 }])
-      expect(charts[name].map((point) => point.timestamp)).toEqual([1, 2])
+      expect(timestampsOf(charts, name)).toEqual([1, 2])
 
       charts = appendChartPoints(charts, [])
-      expect(Object.hasOwn(charts, name)).toBe(false)
-      expect(charts[name]).toBeUndefined()
+      expect(charts.has(name)).toBe(false)
 
       charts = appendChartPoints(charts, [{ ...node, timestamp: 3 }])
-      expect(charts[name].map((point) => point.timestamp)).toEqual([3])
+      expect(timestampsOf(charts, name)).toEqual([3])
     },
   )
 
@@ -194,8 +195,8 @@ describe("appendChartPoints", () => {
         udp_count: 4,
       },
     })
-    const charts = appendChartPoints({}, [node])
-    expect(charts[node.name]).toEqual([
+    const charts = appendChartPoints(new Map(), [node])
+    expect(charts.get(node.name)).toEqual([
       expect.objectContaining({
         timestamp: node.timestamp,
         cpu: 12,
@@ -210,25 +211,22 @@ describe("appendChartPoints", () => {
   })
 
   it("skips repeated samples and keeps the last points", () => {
-    let charts = {}
+    let charts: Charts = new Map()
     for (let t = 1; t <= 5; t++) {
       charts = appendChartPoints(charts, [makeNode({ timestamp: t })], 3)
       charts = appendChartPoints(charts, [makeNode({ timestamp: t })], 3)
     }
-    const timestamps = (charts as ReturnType<typeof appendChartPoints>)["node-1"]?.map(
-      (p) => p.timestamp,
-    )
-    expect(timestamps).toEqual([3, 4, 5])
+    expect(timestampsOf(charts, "node-1")).toEqual([3, 4, 5])
   })
 
   it("keeps the same history object when nothing changed", () => {
     const node = makeNode()
-    const charts = appendChartPoints({}, [node])
-    expect(appendChartPoints(charts, [node])[node.name]).toBe(charts[node.name])
+    const charts = appendChartPoints(new Map(), [node])
+    expect(appendChartPoints(charts, [node]).get(node.name)).toBe(charts.get(node.name))
   })
 
   it("drops nodes that disappeared", () => {
-    const charts = appendChartPoints({}, [makeNode({ name: "a" }), makeNode({ name: "b" })])
-    expect(Object.keys(appendChartPoints(charts, [makeNode({ name: "b" })]))).toEqual(["b"])
+    const charts = appendChartPoints(new Map(), [makeNode({ name: "a" }), makeNode({ name: "b" })])
+    expect([...appendChartPoints(charts, [makeNode({ name: "b" })]).keys()]).toEqual(["b"])
   })
 })

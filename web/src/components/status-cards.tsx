@@ -87,8 +87,8 @@ function StatBadge({
   variant,
 }: Stat & { variant: "outline" | "secondary" }) {
   return (
-    <Badge variant={variant} className="flex gap-1 rounded-lg text-xs" title={label}>
-      <Icon className="size-3" aria-hidden />
+    <Badge variant={variant} className="flex rounded-lg" title={label}>
+      <Icon aria-hidden />
       <span className="sr-only">{label}:</span> {value}
     </Badge>
   )

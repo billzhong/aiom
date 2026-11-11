@@ -20,7 +20,7 @@ use axum::middleware;
 use axum::routing::get;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::sync::watch;
@@ -95,10 +95,15 @@ impl App {
     /// before it is dropped.
     #[must_use]
     pub fn with_keepalive(mut self, ping_interval: Duration, idle_timeout: Duration) -> Self {
-        self.state.keepalive = Keepalive {
-            ping_interval,
-            idle_timeout,
-        };
+        self.state.keepalive.ping_interval = ping_interval;
+        self.state.keepalive.idle_timeout = idle_timeout;
+        self
+    }
+
+    /// Sets how long closing a WebSocket waits for the peer to complete the closing handshake.
+    #[must_use]
+    pub fn with_close_timeout(mut self, close_timeout: Duration) -> Self {
+        self.state.keepalive.close_timeout = close_timeout;
         self
     }
 
@@ -174,6 +179,11 @@ pub async fn run(config: Config) -> anyhow::Result<()> {
     app.serve(listener, shutdown_signal()).await?;
     tracing::info!("shut down");
     Ok(())
+}
+
+/// Locks `mutex`, whose data no panic leaves inconsistent.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Installs the process-wide TLS crypto provider, unless one is installed already.

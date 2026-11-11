@@ -42,7 +42,8 @@ async fn handle(socket: WebSocket, state: AppState, addr: Option<IpAddr>) {
     let mut claim: Option<Claim> = None;
     // Looking a country up can take seconds, which must not hold up the reports.
     let mut lookup: Option<Lookup> = None;
-    loop {
+    // The close code and reason the client is refused with, if it is.
+    let refusal = loop {
         let message = match connection.recv_or(looked_up(&mut lookup)).await {
             Some(Event::Message(message)) => message,
             Some(Event::Done(country)) => {
@@ -51,7 +52,7 @@ async fn handle(socket: WebSocket, state: AppState, addr: Option<IpAddr>) {
                 }
                 continue;
             }
-            None => break,
+            None => break None,
         };
         let Message::Binary(payload) = message else {
             continue;
@@ -60,18 +61,12 @@ async fn handle(socket: WebSocket, state: AppState, addr: Option<IpAddr>) {
             Ok(report) => report,
             Err(ReportError::UnsupportedVersion(version)) => {
                 tracing::warn!(version, "unsupported protocol version");
-                connection
-                    .close(close_code::PROTOCOL, "unsupported protocol version")
-                    .await;
-                return;
+                break Some((close_code::PROTOCOL, "unsupported protocol version"));
             }
             Err(ReportError::Codec(e)) => {
                 let node = claim.as_ref().map(|claim| display(claim.name()));
                 tracing::warn!(node, "malformed report: {e}");
-                connection
-                    .close(close_code::INVALID, "malformed report")
-                    .await;
-                return;
+                break Some((close_code::INVALID, "malformed report"));
             }
         };
         let AgentData {
@@ -92,17 +87,11 @@ async fn handle(socket: WebSocket, state: AppState, addr: Option<IpAddr>) {
                 // look like its trimmed form on the dashboard, yet not conflict with it.
                 if !parse_name(&name).is_ok_and(|parsed| parsed == name) {
                     tracing::warn!(node = ?name, "rejecting agent: invalid node name");
-                    connection
-                        .close(close_code::INVALID, "invalid node name")
-                        .await;
-                    return;
+                    break Some((close_code::INVALID, "invalid node name"));
                 }
                 let Some(new) = state.nodes.claim(&name) else {
                     tracing::warn!(node = %name, "rejecting agent: another client reports as this node");
-                    connection
-                        .close(close_code::POLICY, "another client reports as this node")
-                        .await;
-                    return;
+                    break Some((close_code::POLICY, "another client reports as this node"));
                 };
                 tracing::info!(node = %name, address = addr.map(display), "agent connected");
                 claim.insert(new)
@@ -115,8 +104,10 @@ async fn handle(socket: WebSocket, state: AppState, addr: Option<IpAddr>) {
             .or_else(|| ip.preferred())
             .and_then(|address| geolocate(&state.geoip, address, &mut lookup));
         claim.update(unix_now(), host, stats, geoip);
-    }
-    if let Some(claim) = claim {
+    };
+    if let Some((code, reason)) = refusal {
+        connection.close(code, reason).await;
+    } else if let Some(claim) = claim {
         tracing::info!(node = %claim.name(), "agent disconnected");
     }
 }
