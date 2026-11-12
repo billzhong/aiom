@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "aiom-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aiom-protocol",
  "clap",
@@ -39,7 +39,7 @@ dependencies = [
 
 [[package]]
 name = "aiom-e2e"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aiom-client",
  "aiom-protocol",
@@ -53,7 +53,7 @@ dependencies = [
 
 [[package]]
 name = "aiom-protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "serde",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "aiom-server"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aiom-protocol",
  "anyhow",
