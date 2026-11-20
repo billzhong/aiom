@@ -7,7 +7,6 @@ all-features = true
 # Any other RustSec advisory (vulnerable, unmaintained, unsound or yanked crates) fails.
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained compile-time macro pulled in by netstat2, with no replacement yet" },
-    { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26 only re-exports webpki-roots 1.x, which bans below pin to a fixed version" },
 ]
 
 [licenses]
